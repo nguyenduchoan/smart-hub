@@ -1,0 +1,14 @@
+{
+  "model": "pnnbao-ump/VieNeu-TTS-v3-Nano",
+  "model_revision": "aba295eb96a6fa6003ebe417cc1f2802a7adc1dc",
+  "source_revision": "3206ed960e317e69bfe09f9d553aecbf1090f32e",
+  "voice": "Trúc Ly",
+  "seed": 42,
+  "sample_rate": 24000,
+  "phrases": {
+    "em_nghe_vieneu.wav": "Em nghe.",
+    "em_day_vieneu.wav": "Em đây."
+  },
+  "peak_ceiling_dbfs": -6.02,
+  "generated_locally": true
+}

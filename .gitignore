@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+recordings/
+models/*.npz
+models/*.onnx
+config.local.json
+.voice-tools/
+.env
+.env.*
+!.env.example

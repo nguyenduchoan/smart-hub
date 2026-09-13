@@ -1,0 +1,11 @@
+# Runtime only. Tested with Python 3.11 on Debian 12 x86_64.
+numpy==2.2.6
+onnxruntime==1.23.2
+# Transitive runtime dependencies, pinned for reproducibility.
+coloredlogs==15.0.1
+humanfriendly==10.0
+flatbuffers==25.12.19
+packaging==26.3
+protobuf==7.36.1
+sympy==1.14.0
+mpmath==1.3.0

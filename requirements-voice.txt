@@ -1,0 +1,3 @@
+# Optional: only for making the two Vietnamese WAV acknowledgements once.
+# NumPy and ONNX Runtime come from requirements.txt. No full VieNeu SDK/GUI.
+sea-g2p==0.9.1

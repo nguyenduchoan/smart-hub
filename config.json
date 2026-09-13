@@ -1,0 +1,15 @@
+{
+  "wake_word": "Maika ơi",
+  "engine": "neural",
+  "model_path": "models/maika_oi_neural.npz",
+  "device": "pipewire",
+  "feedback_enabled": true,
+  "feedback_path": "assets/em_nghe_vieneu.wav",
+  "playback_device": "pipewire",
+  "threshold": 0.72,
+  "cooldown_seconds": 2.0,
+  "min_rms": 180,
+  "silence_seconds": 0.4,
+  "min_speech_seconds": 0.35,
+  "max_speech_seconds": 2.5
+}
