@@ -92,7 +92,8 @@ def run(config, args, emit, status):
     if args.mock:
         return mock_run(config, args, emit, status)
     from .local_stt import LocalSTT
-    backend = LocalSTT()
+    wake_profile = getattr(args, "wake_profile", "standard")
+    backend = LocalSTT(wake_profile=wake_profile)
     status(f"[ENGINE] STT tiếng Việt + VAD sẵn sàng trên CPU ({backend.startup_seconds:.2f}s).")
     session = None
     interrupted = False

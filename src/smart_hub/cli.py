@@ -359,6 +359,8 @@ def main(argv=None):
     stt.add_argument("--diagnostic", action="store_true", help="In thời gian STT; không in nội dung lời nói.")
     stt.add_argument("--show-text", action="store_true", help="Hiện transcript local trên stderr để tự kiểm tra; không lưu file.")
     stt.add_argument("--alias", action="append", default=[], help="Cách viết khác của đủ cụm gọi, ví dụ 'mai ca ơi'.")
+    stt.add_argument("--wake-profile", choices=("standard", "sensitive"), default="standard",
+                     help="standard giữ mức cũ; sensitive thử giọng nhỏ/ngắn (mặc định standard).")
     stt.add_argument("--no-feedback", action="store_true", help="Tắt loa chỉ trong phiên kiểm thử này.")
     assistant = sub.add_parser("assistant", help="Wake STT -> đáp cố định -> log một câu lệnh -> chờ wake.")
     assistant.add_argument("--mock", action="store_true", help="Ba chu kỳ giả lập, không cần mic/model/loa.")
