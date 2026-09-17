@@ -1,0 +1,46 @@
+{
+  "synthetic_only": true,
+  "model": "pnnbao-ump/VieNeu-TTS-v3-Nano",
+  "model_revision": "aba295eb96a6fa6003ebe417cc1f2802a7adc1dc",
+  "source_revision": "3206ed960e317e69bfe09f9d553aecbf1090f32e",
+  "seed": 42,
+  "sample_rate": 16000,
+  "processing": "CPU VieNeu Nano; 24kHz to 16kHz linear resample; 0.5s leading and 1s trailing silence",
+  "clips": [
+    {
+      "file": "0-1.wav",
+      "text": "Mai ka ơi.",
+      "voice": "Trúc Ly",
+      "expected_wake": true,
+      "sha256": "322c008ac2d2b0ae5b54895fabdca24fbed3ab1540b85322224188d6c81115df"
+    },
+    {
+      "file": "0-3.wav",
+      "text": "Maika.",
+      "voice": "Trúc Ly",
+      "expected_wake": false,
+      "sha256": "39abe5250e85cc774f70336796399fb17d5b61d81f655d701412aeac01f55571"
+    },
+    {
+      "file": "0-4.wav",
+      "text": "Em nghe.",
+      "voice": "Trúc Ly",
+      "expected_wake": false,
+      "sha256": "5c1a772dc95ad45c554aaab544011e2f58a45ac69c8c68922aa73f2c9da0d7ff"
+    },
+    {
+      "file": "0-5.wav",
+      "text": "Mai đi chơi.",
+      "voice": "Trúc Ly",
+      "expected_wake": false,
+      "sha256": "e5297d3dfec860e91b43a8f5ac258e788bd229ccdf6e1e9263af33064a55b232"
+    },
+    {
+      "file": "1-1.wav",
+      "text": "Mai ka ơi.",
+      "voice": "Adam",
+      "expected_wake": true,
+      "sha256": "5f1e912f001a9b5bd4e3a56c1cac447b29fed9b8dcb8f7dc59f349f21a885856"
+    }
+  ]
+}

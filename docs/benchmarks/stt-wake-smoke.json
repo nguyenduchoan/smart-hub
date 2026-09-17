@@ -1,0 +1,277 @@
+{
+  "measured_at": "2026-09-13T13:58:51.658071+07:00",
+  "synthetic_only": true,
+  "description": "Five synthetic fixtures, one warm-up pass, five measured passes; offline pipeline without capture/playback. Does not measure wake accuracy on human speech or mouth-to-speaker latency.",
+  "python": "3.11.2",
+  "platform": "Linux-6.1.0-51-amd64-x86_64-with-glibc2.36",
+  "model_startup_seconds": 0.9402,
+  "rss_peak_mib": 142.12,
+  "measured_cases": 25,
+  "decode_p50_ms": 25.615,
+  "decode_p90_ms": 29.666,
+  "pipeline_cpu_total_seconds": 1.1301,
+  "pipeline_wall_total_seconds": 1.1357,
+  "speech_total_seconds": 28.47,
+  "decode_rtf": 0.0225,
+  "results": [
+    {
+      "fixture": "0-1.wav",
+      "iteration": 1,
+      "pipeline_wall_seconds": 0.03819895721971989,
+      "pipeline_cpu_seconds": 0.037927496000000005,
+      "decode_seconds": 0.021103812847286463,
+      "speech_seconds": 0.998,
+      "events": 1,
+      "expected_events": 1
+    },
+    {
+      "fixture": "0-3.wav",
+      "iteration": 1,
+      "pipeline_wall_seconds": 0.03914463799446821,
+      "pipeline_cpu_seconds": 0.03914709599999999,
+      "decode_seconds": 0.02222584281116724,
+      "speech_seconds": 1.094,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "0-4.wav",
+      "iteration": 1,
+      "pipeline_wall_seconds": 0.03843163698911667,
+      "pipeline_cpu_seconds": 0.03810904100000001,
+      "decode_seconds": 0.020463509019464254,
+      "speech_seconds": 1.03,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "0-5.wav",
+      "iteration": 1,
+      "pipeline_wall_seconds": 0.04472554801031947,
+      "pipeline_cpu_seconds": 0.04439725899999969,
+      "decode_seconds": 0.026662515942007303,
+      "speech_seconds": 1.286,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "1-1.wav",
+      "iteration": 1,
+      "pipeline_wall_seconds": 0.0507835759781301,
+      "pipeline_cpu_seconds": 0.05019919999999978,
+      "decode_seconds": 0.030562662053853273,
+      "speech_seconds": 1.286,
+      "events": 1,
+      "expected_events": 1
+    },
+    {
+      "fixture": "0-1.wav",
+      "iteration": 2,
+      "pipeline_wall_seconds": 0.04081496223807335,
+      "pipeline_cpu_seconds": 0.04081750099999981,
+      "decode_seconds": 0.021311411168426275,
+      "speech_seconds": 0.998,
+      "events": 1,
+      "expected_events": 1
+    },
+    {
+      "fixture": "0-3.wav",
+      "iteration": 2,
+      "pipeline_wall_seconds": 0.04455092176795006,
+      "pipeline_cpu_seconds": 0.04374441799999973,
+      "decode_seconds": 0.025615481194108725,
+      "speech_seconds": 1.094,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "0-4.wav",
+      "iteration": 2,
+      "pipeline_wall_seconds": 0.04281511204317212,
+      "pipeline_cpu_seconds": 0.041426359999999995,
+      "decode_seconds": 0.02519604889675975,
+      "speech_seconds": 1.03,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "0-5.wav",
+      "iteration": 2,
+      "pipeline_wall_seconds": 0.04974266933277249,
+      "pipeline_cpu_seconds": 0.04871637399999962,
+      "decode_seconds": 0.02938075689598918,
+      "speech_seconds": 1.286,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "1-1.wav",
+      "iteration": 2,
+      "pipeline_wall_seconds": 0.047846772242337465,
+      "pipeline_cpu_seconds": 0.04697144899999994,
+      "decode_seconds": 0.02826614398509264,
+      "speech_seconds": 1.286,
+      "events": 1,
+      "expected_events": 1
+    },
+    {
+      "fixture": "0-1.wav",
+      "iteration": 3,
+      "pipeline_wall_seconds": 0.042339236009866,
+      "pipeline_cpu_seconds": 0.04234258100000021,
+      "decode_seconds": 0.022020201198756695,
+      "speech_seconds": 0.998,
+      "events": 1,
+      "expected_events": 1
+    },
+    {
+      "fixture": "0-3.wav",
+      "iteration": 3,
+      "pipeline_wall_seconds": 0.044346840120851994,
+      "pipeline_cpu_seconds": 0.04434937299999975,
+      "decode_seconds": 0.026269740890711546,
+      "speech_seconds": 1.094,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "0-4.wav",
+      "iteration": 3,
+      "pipeline_wall_seconds": 0.04133322695270181,
+      "pipeline_cpu_seconds": 0.041335527999999844,
+      "decode_seconds": 0.023119193967431784,
+      "speech_seconds": 1.03,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "0-5.wav",
+      "iteration": 3,
+      "pipeline_wall_seconds": 0.04744352912530303,
+      "pipeline_cpu_seconds": 0.047446882000000024,
+      "decode_seconds": 0.02751551615074277,
+      "speech_seconds": 1.286,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "1-1.wav",
+      "iteration": 3,
+      "pipeline_wall_seconds": 0.04704691469669342,
+      "pipeline_cpu_seconds": 0.047049131999999716,
+      "decode_seconds": 0.027711582835763693,
+      "speech_seconds": 1.286,
+      "events": 1,
+      "expected_events": 1
+    },
+    {
+      "fixture": "0-1.wav",
+      "iteration": 4,
+      "pipeline_wall_seconds": 0.04091141186654568,
+      "pipeline_cpu_seconds": 0.040913873000000045,
+      "decode_seconds": 0.022945367731153965,
+      "speech_seconds": 0.998,
+      "events": 1,
+      "expected_events": 1
+    },
+    {
+      "fixture": "0-3.wav",
+      "iteration": 4,
+      "pipeline_wall_seconds": 0.04347647400572896,
+      "pipeline_cpu_seconds": 0.043467763000000215,
+      "decode_seconds": 0.023532141000032425,
+      "speech_seconds": 1.094,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "0-4.wav",
+      "iteration": 4,
+      "pipeline_wall_seconds": 0.04054477717727423,
+      "pipeline_cpu_seconds": 0.040494053000000196,
+      "decode_seconds": 0.02259870432317257,
+      "speech_seconds": 1.03,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "0-5.wav",
+      "iteration": 4,
+      "pipeline_wall_seconds": 0.04793905420228839,
+      "pipeline_cpu_seconds": 0.04792938599999985,
+      "decode_seconds": 0.028251441195607185,
+      "speech_seconds": 1.286,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "1-1.wav",
+      "iteration": 4,
+      "pipeline_wall_seconds": 0.05140529992058873,
+      "pipeline_cpu_seconds": 0.05140876900000002,
+      "decode_seconds": 0.029856547247618437,
+      "speech_seconds": 1.286,
+      "events": 1,
+      "expected_events": 1
+    },
+    {
+      "fixture": "0-1.wav",
+      "iteration": 5,
+      "pipeline_wall_seconds": 0.043081073090434074,
+      "pipeline_cpu_seconds": 0.043085239999999914,
+      "decode_seconds": 0.023102319333702326,
+      "speech_seconds": 0.998,
+      "events": 1,
+      "expected_events": 1
+    },
+    {
+      "fixture": "0-3.wav",
+      "iteration": 5,
+      "pipeline_wall_seconds": 0.060861227102577686,
+      "pipeline_cpu_seconds": 0.06086488600000006,
+      "decode_seconds": 0.032215407118201256,
+      "speech_seconds": 1.094,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "0-4.wav",
+      "iteration": 5,
+      "pipeline_wall_seconds": 0.05069649592041969,
+      "pipeline_cpu_seconds": 0.05069922499999979,
+      "decode_seconds": 0.02520268876105547,
+      "speech_seconds": 1.03,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "0-5.wav",
+      "iteration": 5,
+      "pipeline_wall_seconds": 0.04953917907550931,
+      "pipeline_cpu_seconds": 0.04954203200000018,
+      "decode_seconds": 0.028217169921845198,
+      "speech_seconds": 1.286,
+      "events": 0,
+      "expected_events": 0
+    },
+    {
+      "fixture": "1-1.wav",
+      "iteration": 5,
+      "pipeline_wall_seconds": 0.047690820414572954,
+      "pipeline_cpu_seconds": 0.04769352699999985,
+      "decode_seconds": 0.028347136918455362,
+      "speech_seconds": 1.286,
+      "events": 1,
+      "expected_events": 1
+    }
+  ],
+  "conditions": {
+    "regression_suite_running_concurrently": true,
+    "microphone_and_playback_included": false,
+    "audio_is_synthetic": true,
+    "warmup_passes": 1,
+    "measured_passes": 5,
+    "fixtures_per_pass": 5,
+    "not_a_production_performance_gate": true
+  }
+}

@@ -1,0 +1,1846 @@
+{
+  "date": "2026-09-13",
+  "synthetic_only": true,
+  "corpus": "tests/fixtures/commands/provenance.json",
+  "conditions": {
+    "normal": "WAV tổng hợp gốc",
+    "quiet": "Nhân biên độ 0.1",
+    "noise": "Nhiễu trắng seed 2026; SNR 15 dB theo RMS các sample |x| > 0.01"
+  },
+  "measurement": "Khớp toàn câu; Zipformer so chữ hoa trực tiếp. PhoWhisper bỏ dấu câu, đổi 25/5 thành chữ để so sánh.",
+  "selected": "norm: VAD riêng cho lệnh và gain có giới hạn; không đổi bộ giải mã wake",
+  "runtime_microphone_tested": false,
+  "candidates": [
+    {
+      "profile": "old",
+      "condition": "normal",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.039750433061271906,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "quiet",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.04767401097342372,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "noise",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.04566410509869456,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "normal",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.037620969116687775,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "quiet",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.04361750418320298,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "noise",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.042977892793715,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "normal",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "TĂNG ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.03719897987321019,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "quiet",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "TĂNG ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.04265982424840331,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "noise",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "TĂNG ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.052060992922633886,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "normal",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢM ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.038679939694702625,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "quiet",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢM ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.04010299080982804,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "noise",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢNG ÂM LƯỢNG"
+      ],
+      "correct": false,
+      "seconds": 0.04101630626246333,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "normal",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [
+        "MỞ ĐIỀU HÒA"
+      ],
+      "correct": true,
+      "seconds": 0.04536812100559473,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "quiet",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [],
+      "correct": false,
+      "seconds": 0.013461905997246504,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "noise",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [
+        "MỞ ĐIỀU HÒA"
+      ],
+      "correct": true,
+      "seconds": 0.048107908107340336,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "normal",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ"
+      ],
+      "correct": true,
+      "seconds": 0.06403063610196114,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "quiet",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "QUY TRÌNH NHIỆT ĐỘ HAI MƯƠI LĂM"
+      ],
+      "correct": false,
+      "seconds": 0.06502660037949681,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "noise",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "CHỈNH NHIỆT ĐỘ"
+      ],
+      "correct": false,
+      "seconds": 0.04621491581201553,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "normal",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.053623941726982594,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "quiet",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.051431185100227594,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "noise",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.047143951058387756,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "normal",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [
+        "HẸN GIỜ NĂM PHÚT"
+      ],
+      "correct": true,
+      "seconds": 0.04728340683504939,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "quiet",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [
+        "HẸN GIỜ NĂM PHÚT"
+      ],
+      "correct": true,
+      "seconds": 0.056748709641397,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "noise",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [
+        "HẸN GIỜ NĂM PHÚT"
+      ],
+      "correct": true,
+      "seconds": 0.07253105007112026,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "normal",
+      "expected": "BẬT QUẠT",
+      "text": [],
+      "correct": false,
+      "seconds": 0.017102726735174656,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "quiet",
+      "expected": "BẬT QUẠT",
+      "text": [
+        "QUÀ CỦA"
+      ],
+      "correct": false,
+      "seconds": 0.03515566000714898,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "noise",
+      "expected": "BẬT QUẠT",
+      "text": [
+        "BẬT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.0436044791713357,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "normal",
+      "expected": "TẮT QUẠT",
+      "text": [],
+      "correct": false,
+      "seconds": 0.011532401200383902,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "quiet",
+      "expected": "TẮT QUẠT",
+      "text": [],
+      "correct": false,
+      "seconds": 0.011011685710400343,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    },
+    {
+      "profile": "old",
+      "condition": "noise",
+      "expected": "TẮT QUẠT",
+      "text": [
+        "TẮT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.03633992187678814,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "normal",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.04495499795302749,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "quiet",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.05249241599813104,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "noise",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.04604275897145271,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "normal",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.039925173856318,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "quiet",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.04415562329813838,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "noise",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.04354641493409872,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "normal",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "VĂN ÂM LƯỢNG"
+      ],
+      "correct": false,
+      "seconds": 0.05243128724396229,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "quiet",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "TĂNG ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.06404795404523611,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "noise",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "TĂNG ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.05163827119395137,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "normal",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢM ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.057584782131016254,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "quiet",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢM ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.05030335392802954,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "noise",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢNG ÂM LƯỢNG"
+      ],
+      "correct": false,
+      "seconds": 0.04897816013544798,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "normal",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [
+        "MỞ ĐIỀU HÒA"
+      ],
+      "correct": true,
+      "seconds": 0.05020651314407587,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "quiet",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [
+        "MỞ ĐIỀU HÒA"
+      ],
+      "correct": true,
+      "seconds": 0.05125905619934201,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "noise",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [
+        "MỞ ĐIỀU HÒA"
+      ],
+      "correct": true,
+      "seconds": 0.05250694090500474,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "normal",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ"
+      ],
+      "correct": true,
+      "seconds": 0.07757445704191923,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "quiet",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "QUY TRÌNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ"
+      ],
+      "correct": false,
+      "seconds": 0.07738841697573662,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "noise",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ"
+      ],
+      "correct": true,
+      "seconds": 0.08710946794599295,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "normal",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.053240552078932524,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "quiet",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.05735136196017265,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "noise",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.05369895976036787,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "normal",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [
+        "HẸN GIỜ NĂM PHÚT"
+      ],
+      "correct": true,
+      "seconds": 0.04939384898170829,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "quiet",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [],
+      "correct": false,
+      "seconds": 0.015719936229288578,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "noise",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [
+        "HẸN GIỜ NĂM PHÚT"
+      ],
+      "correct": true,
+      "seconds": 0.05394827714189887,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "normal",
+      "expected": "BẬT QUẠT",
+      "text": [
+        "BẬT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.03384443884715438,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "quiet",
+      "expected": "BẬT QUẠT",
+      "text": [],
+      "correct": false,
+      "seconds": 0.011863098945468664,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "noise",
+      "expected": "BẬT QUẠT",
+      "text": [
+        "BẬT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.03670232091099024,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "normal",
+      "expected": "TẮT QUẠT",
+      "text": [
+        "TẮT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.03093463508412242,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "quiet",
+      "expected": "TẮT QUẠT",
+      "text": [
+        "CÔNG TÁC KÍCH HOẠT"
+      ],
+      "correct": false,
+      "seconds": 0.03938132291659713,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    },
+    {
+      "profile": "vad",
+      "condition": "noise",
+      "expected": "TẮT QUẠT",
+      "text": [
+        "TẮT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.037310092244297266,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.04236384993419051,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "quiet",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.0412359731271863,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.047347677405923605,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.04086729604750872,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "quiet",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.055415814742445946,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.06609493773430586,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "VĂN ÂM LƯỢNG"
+      ],
+      "correct": false,
+      "seconds": 0.051544937770813704,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "quiet",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "TĂNG ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.05074523622170091,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "TĂNG ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.046441700309515,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢM ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.04092666273936629,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "quiet",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢM ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.038528410252183676,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢNG ÂM LƯỢNG"
+      ],
+      "correct": false,
+      "seconds": 0.050593303982168436,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [
+        "MỞ ĐIỀU HÒA"
+      ],
+      "correct": true,
+      "seconds": 0.061566630844026804,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "quiet",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [
+        "MỞ ĐIỀU HÒA"
+      ],
+      "correct": true,
+      "seconds": 0.0447310539893806,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [
+        "MỞ ĐIỀU HÒA"
+      ],
+      "correct": true,
+      "seconds": 0.050091467797756195,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ"
+      ],
+      "correct": true,
+      "seconds": 0.07490743417292833,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "quiet",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ"
+      ],
+      "correct": true,
+      "seconds": 0.07056155474856496,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ"
+      ],
+      "correct": true,
+      "seconds": 0.07821482885628939,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.051099973265081644,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "quiet",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.04926923010498285,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.05631741136312485,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [
+        "HẸN GIỜ NĂM PHÚT"
+      ],
+      "correct": true,
+      "seconds": 0.05125259421765804,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "quiet",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [
+        "HẸN GIỜ NĂM PHÚT"
+      ],
+      "correct": true,
+      "seconds": 0.056675394997000694,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [
+        "HẸN GIỜ NĂM PHÚT"
+      ],
+      "correct": true,
+      "seconds": 0.06289952900260687,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "BẬT QUẠT",
+      "text": [
+        "BẬT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.03325850889086723,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "quiet",
+      "expected": "BẬT QUẠT",
+      "text": [
+        "BẬT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.03072519088163972,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "BẬT QUẠT",
+      "text": [
+        "BẬT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.039282163605093956,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "TẮT QUẠT",
+      "text": [
+        "TẮT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.03181744925677776,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "quiet",
+      "expected": "TẮT QUẠT",
+      "text": [
+        "TẮT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.030635861214250326,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "TẮT QUẠT",
+      "text": [
+        "TẮT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.03959824284538627,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "normal",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.056714105885475874,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "quiet",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.045053376350551844,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "noise",
+      "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+      "text": [
+        "BẬT ĐÈN PHÒNG KHÁCH"
+      ],
+      "correct": true,
+      "seconds": 0.05607382534071803,
+      "audio_seconds": 2.708,
+      "file": "bat_den.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "normal",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.04492755001410842,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "quiet",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.04341093124821782,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "noise",
+      "expected": "TẮT ĐÈN NHÀ BẾP",
+      "text": [
+        "TẮT ĐÈN NHÀ BẾP"
+      ],
+      "correct": true,
+      "seconds": 0.054260476026684046,
+      "audio_seconds": 2.58,
+      "file": "tat_den.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "normal",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "VĂN ÂM LƯỢNG"
+      ],
+      "correct": false,
+      "seconds": 0.04338181111961603,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "quiet",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "TĂNG ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.041024415753781796,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "noise",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "TĂNG ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.05284202890470624,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "normal",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢM ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.04211051994934678,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "quiet",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢM ÂM LƯỢNG"
+      ],
+      "correct": true,
+      "seconds": 0.04405007464811206,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "noise",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢNG ÂM LƯỢNG"
+      ],
+      "correct": false,
+      "seconds": 0.05449566524475813,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "normal",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [
+        "MỞ ĐIỀU HÒA"
+      ],
+      "correct": true,
+      "seconds": 0.052958871237933636,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "quiet",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [
+        "MỞ ĐIỀU HÒA"
+      ],
+      "correct": true,
+      "seconds": 0.050664437003433704,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "noise",
+      "expected": "MỞ ĐIỀU HÒA",
+      "text": [
+        "MỞ ĐIỀU HÒA"
+      ],
+      "correct": true,
+      "seconds": 0.056647425051778555,
+      "audio_seconds": 2.9,
+      "file": "dieu_hoa.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "normal",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ"
+      ],
+      "correct": true,
+      "seconds": 0.07993269013240933,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "quiet",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ"
+      ],
+      "correct": true,
+      "seconds": 0.07956776674836874,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "noise",
+      "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "text": [
+        "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ"
+      ],
+      "correct": true,
+      "seconds": 0.08706439798697829,
+      "audio_seconds": 3.796,
+      "file": "nhiet_do.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "normal",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.05748216388747096,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "quiet",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.06225879490375519,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "noise",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.06499890517443419,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "normal",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [
+        "HẸN GIỜ NĂM PHÚT"
+      ],
+      "correct": true,
+      "seconds": 0.05902119493111968,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "quiet",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [
+        "HẸN GIỜ NĂM PHÚT"
+      ],
+      "correct": true,
+      "seconds": 0.054334565065801144,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "noise",
+      "expected": "HẸN GIỜ NĂM PHÚT",
+      "text": [
+        "HẸN GIỜ NĂM PHÚT"
+      ],
+      "correct": true,
+      "seconds": 0.08670573635026813,
+      "audio_seconds": 3.092,
+      "file": "hen_gio.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "normal",
+      "expected": "BẬT QUẠT",
+      "text": [
+        "BẬT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.05615320196375251,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "quiet",
+      "expected": "BẬT QUẠT",
+      "text": [
+        "BẬT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.04505099402740598,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "noise",
+      "expected": "BẬT QUẠT",
+      "text": [
+        "BẬT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.06561370892450213,
+      "audio_seconds": 2.26,
+      "file": "bat_quat.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "normal",
+      "expected": "TẮT QUẠT",
+      "text": [
+        "TẮT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.03862008824944496,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "quiet",
+      "expected": "TẮT QUẠT",
+      "text": [
+        "TẮT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.03607128839939833,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    },
+    {
+      "profile": "beam",
+      "condition": "noise",
+      "expected": "TẮT QUẠT",
+      "text": [
+        "TẮT QUẠT"
+      ],
+      "correct": true,
+      "seconds": 0.06484057009220123,
+      "audio_seconds": 2.26,
+      "file": "tat_quat.wav"
+    }
+  ],
+  "phowhisper": {
+    "repository": "quinguyen1502/phowhisper-salony-onnx",
+    "revision": "8cfe14fb3b5b461f9fce0dcd6511d76ddd8ec8a7",
+    "archive_sha256": "dc9c4a02abc4f13b867538bed2b7a02dc56b7931017029b5b0ebf6bbf5508dc0",
+    "threads": 4,
+    "tail_paddings": 300,
+    "startup_seconds": 1.687,
+    "selected": false,
+    "results": [
+      {
+        "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+        "condition": "normal",
+        "text": [
+          "bật đèn phòng khách"
+        ],
+        "seconds": [
+          0.6779108461923897
+        ],
+        "correct": true
+      },
+      {
+        "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+        "condition": "quiet",
+        "text": [
+          "bật đèn phòng khách"
+        ],
+        "seconds": [
+          0.6087820748798549
+        ],
+        "correct": true
+      },
+      {
+        "expected": "BẬT ĐÈN PHÒNG KHÁCH",
+        "condition": "noise",
+        "text": [
+          "bậc đèn phòng khách."
+        ],
+        "seconds": [
+          0.7937226272188127
+        ],
+        "correct": false
+      },
+      {
+        "expected": "TẮT ĐÈN NHÀ BẾP",
+        "condition": "normal",
+        "text": [
+          "tắt đèn nhà bế"
+        ],
+        "seconds": [
+          0.5962679432705045
+        ],
+        "correct": false
+      },
+      {
+        "expected": "TẮT ĐÈN NHÀ BẾP",
+        "condition": "quiet",
+        "text": [
+          "tắt đèn nhà bế"
+        ],
+        "seconds": [
+          0.5241116611286998
+        ],
+        "correct": false
+      },
+      {
+        "expected": "TẮT ĐÈN NHÀ BẾP",
+        "condition": "noise",
+        "text": [
+          "tắt đèn nhà bếp t"
+        ],
+        "seconds": [
+          0.7527501108124852
+        ],
+        "correct": false
+      },
+      {
+        "expected": "TĂNG ÂM LƯỢNG",
+        "condition": "normal",
+        "text": [
+          "tăng âm lượng n"
+        ],
+        "seconds": [
+          0.5440577627159655
+        ],
+        "correct": false
+      },
+      {
+        "expected": "TĂNG ÂM LƯỢNG",
+        "condition": "quiet",
+        "text": [
+          "tăng âm lượng."
+        ],
+        "seconds": [
+          0.5659814039245248
+        ],
+        "correct": true
+      },
+      {
+        "expected": "TĂNG ÂM LƯỢNG",
+        "condition": "noise",
+        "text": [
+          "sân âm lượng."
+        ],
+        "seconds": [
+          0.573403321672231
+        ],
+        "correct": false
+      },
+      {
+        "expected": "GIẢM ÂM LƯỢNG",
+        "condition": "normal",
+        "text": [
+          "giảm âm lượng"
+        ],
+        "seconds": [
+          0.5394239658489823
+        ],
+        "correct": true
+      },
+      {
+        "expected": "GIẢM ÂM LƯỢNG",
+        "condition": "quiet",
+        "text": [
+          "giảm âm lượng"
+        ],
+        "seconds": [
+          0.5315384571440518
+        ],
+        "correct": true
+      },
+      {
+        "expected": "GIẢM ÂM LƯỢNG",
+        "condition": "noise",
+        "text": [
+          "dạng âm lượng."
+        ],
+        "seconds": [
+          0.7705978178419173
+        ],
+        "correct": false
+      },
+      {
+        "expected": "MỞ ĐIỀU HÒA",
+        "condition": "normal",
+        "text": [
+          "mở điều hòa."
+        ],
+        "seconds": [
+          0.5863803345710039
+        ],
+        "correct": true
+      },
+      {
+        "expected": "MỞ ĐIỀU HÒA",
+        "condition": "quiet",
+        "text": [
+          "mở điều hòa."
+        ],
+        "seconds": [
+          0.5741949300281703
+        ],
+        "correct": true
+      },
+      {
+        "expected": "MỞ ĐIỀU HÒA",
+        "condition": "noise",
+        "text": [
+          "mở điều hòa."
+        ],
+        "seconds": [
+          0.5823574960231781
+        ],
+        "correct": true
+      },
+      {
+        "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+        "condition": "normal",
+        "text": [
+          "trình nhiệt độ hai mươi lăm độ trình"
+        ],
+        "seconds": [
+          1.1127654388546944
+        ],
+        "correct": false
+      },
+      {
+        "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+        "condition": "quiet",
+        "text": [
+          "trình nhiệt độ hai mươi lăm độ trình"
+        ],
+        "seconds": [
+          1.1516647823154926
+        ],
+        "correct": false
+      },
+      {
+        "expected": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+        "condition": "noise",
+        "text": [
+          "trình nhiệt độ hai mươi lăm độ trình nhiệt"
+        ],
+        "seconds": [
+          1.2606604592874646
+        ],
+        "correct": false
+      },
+      {
+        "expected": "ĐÓNG RÈM CỬA",
+        "condition": "normal",
+        "text": [
+          "óng rèm rèm"
+        ],
+        "seconds": [
+          0.7677460815757513
+        ],
+        "correct": false
+      },
+      {
+        "expected": "ĐÓNG RÈM CỬA",
+        "condition": "quiet",
+        "text": [
+          "óng rèm rèm"
+        ],
+        "seconds": [
+          0.7652413318865001
+        ],
+        "correct": false
+      },
+      {
+        "expected": "ĐÓNG RÈM CỬA",
+        "condition": "noise",
+        "text": [
+          "óng rèm rèm c"
+        ],
+        "seconds": [
+          0.8658171407878399
+        ],
+        "correct": false
+      },
+      {
+        "expected": "HẸN GIỜ NĂM PHÚT",
+        "condition": "normal",
+        "text": [
+          "hẹn giờ năm phút."
+        ],
+        "seconds": [
+          0.6448821621015668
+        ],
+        "correct": true
+      },
+      {
+        "expected": "HẸN GIỜ NĂM PHÚT",
+        "condition": "quiet",
+        "text": [
+          "hẹn giờ năm phút."
+        ],
+        "seconds": [
+          0.7514244066551328
+        ],
+        "correct": true
+      },
+      {
+        "expected": "HẸN GIỜ NĂM PHÚT",
+        "condition": "noise",
+        "text": [
+          "hẹn giờ năm phút."
+        ],
+        "seconds": [
+          0.6306811361573637
+        ],
+        "correct": true
+      },
+      {
+        "expected": "BẬT QUẠT",
+        "condition": "normal",
+        "text": [
+          "bực quạt."
+        ],
+        "seconds": [
+          0.4461591229774058
+        ],
+        "correct": false
+      },
+      {
+        "expected": "BẬT QUẠT",
+        "condition": "quiet",
+        "text": [
+          "bực quạt."
+        ],
+        "seconds": [
+          0.45473432494327426
+        ],
+        "correct": false
+      },
+      {
+        "expected": "BẬT QUẠT",
+        "condition": "noise",
+        "text": [
+          "bực quạt."
+        ],
+        "seconds": [
+          0.4621571167372167
+        ],
+        "correct": false
+      },
+      {
+        "expected": "TẮT QUẠT",
+        "condition": "normal",
+        "text": [
+          "tất quạt."
+        ],
+        "seconds": [
+          0.4229597896337509
+        ],
+        "correct": false
+      },
+      {
+        "expected": "TẮT QUẠT",
+        "condition": "quiet",
+        "text": [
+          "tất quạt."
+        ],
+        "seconds": [
+          0.4588080872781575
+        ],
+        "correct": false
+      },
+      {
+        "expected": "TẮT QUẠT",
+        "condition": "noise",
+        "text": [
+          "tất quạt."
+        ],
+        "seconds": [
+          0.4153491500765085
+        ],
+        "correct": false
+      }
+    ]
+  },
+  "unresolved": [
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "TĂNG ÂM LƯỢNG",
+      "text": [
+        "VĂN ÂM LƯỢNG"
+      ],
+      "correct": false,
+      "seconds": 0.051544937770813704,
+      "audio_seconds": 2.516,
+      "file": "tang_am.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "GIẢM ÂM LƯỢNG",
+      "text": [
+        "GIẢNG ÂM LƯỢNG"
+      ],
+      "correct": false,
+      "seconds": 0.050593303982168436,
+      "audio_seconds": 2.58,
+      "file": "giam_am.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "normal",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.051099973265081644,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "quiet",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.04926923010498285,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    },
+    {
+      "profile": "norm",
+      "condition": "noise",
+      "expected": "ĐÓNG RÈM CỬA",
+      "text": [
+        "ĐÓNG RÈM RÈM CỬA"
+      ],
+      "correct": false,
+      "seconds": 0.05631741136312485,
+      "audio_seconds": 3.092,
+      "file": "dong_rem.wav"
+    }
+  ]
+}

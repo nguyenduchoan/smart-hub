@@ -58,6 +58,29 @@ class FeedbackTests(unittest.TestCase):
         self.assertIsNone(self.player.process)
         self.assertTrue(self.process.stderr.closed)
 
+    def test_shorter_guard_accepts_command_soon_after_playback_without_replaying_echo(self):
+        player = VoiceFeedback(self.path, clock=lambda: self.now, echo_guard_seconds=0.1)
+        self.addCleanup(player.close)
+        detector = Mock()
+        frame = b"\x01\0" * 320
+        player.play()
+        feed_audio(detector, frame, player)
+        self.process.poll.return_value = 0
+        feed_audio(detector, frame, player)
+        self.now += 0.05
+        feed_audio(detector, frame, player)
+        self.assertEqual(detector.discard.call_count, 3)
+        detector.feed.assert_not_called()
+        self.now += 0.07
+        feed_audio(detector, frame, player)
+        detector.feed.assert_called_once_with(frame)
+
+    def test_invalid_echo_guard_is_rejected_before_audio_opens(self):
+        for value in (-0.1, 2.1, float("nan"), float("inf")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                VoiceFeedback(self.path, echo_guard_seconds=value)
+        self.popen.assert_not_called()
+
     def test_stalled_player_is_killed_after_bounded_timeout(self):
         self.player.play()
         self.process.wait.side_effect = [subprocess.TimeoutExpired("aplay", 2), 0]

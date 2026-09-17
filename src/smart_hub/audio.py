@@ -106,6 +106,15 @@ class AlsaCapture:
         if self.selector:
             self.selector.close()
 
+    def request_stop(self):
+        """Unblock the owning capture thread; that thread still closes its pipes."""
+        process = self.process
+        if process is not None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+
 
 def capture_pcm(device, seconds):
     if not math.isfinite(seconds) or not 0 < seconds <= 300:

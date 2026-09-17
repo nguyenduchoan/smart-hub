@@ -1,9 +1,189 @@
-# Smart Hub — Milestone 1: “Maika ơi”
+# Smart Hub — “Maika ơi”
 
-Microphone → nhận diện wake word local → log/event và câu phản hồi cố định.
-**Chỉ Milestone 1.** Người dùng bổ sung yêu cầu loa nói “em nghe”/“em đây”
-để biết đã nhận wake word. Runtime phát WAV local, không tổng hợp lời đáp động.
-Không có BroadLink, device control, STT, LLM, automation hay service production.
+Microphone → nhận diện câu gọi local → đáp “em nghe” → log một câu nói sau wake.
+**Chỉ nhận và log lời nói, chưa thực thi lệnh.** Ngày 2026-09-13, người dùng yêu
+cầu thêm STT tiếng Việt để thử nhận nhiều người nói, chọn đủ cụm “Maika ơi”,
+và đã tự thử, xác nhận gọi được và nghe “em nghe” ổn. Runtime phát WAV VieNeu local đã
+chọn; không tổng hợp lời đáp động, không LLM, BroadLink, điều khiển thiết bị
+hoặc service production.
+
+Ngày **2026-09-15**, đã hoàn tất **Phase 1B**: chọn bộ điều phối lượt
+**local với Silero ONNX** cho bước phát triển tiếp theo. Thử nghiệm offline
+đối chiếu Pipecat đã có số đo CPU/RAM, kiểm tra lifecycle và quyết định tại
+[conversation-orchestration.md](docs/decisions/conversation-orchestration.md).
+Phần thu mẫu giọng thêm được để lại sau. Ngày **2026-09-17**, đã tích hợp
+**Phase 2: `--capture-only`** và kiểm thử tự động; nghiệm thu giọng thật còn
+chờ. Tiến độ toàn kế hoạch và điểm tạm dừng: [implementation-status.md](docs/implementation-status.md).
+
+## Thu trọn lượt nói — Phase 2
+
+```bash
+.venv/bin/python scripts/smart_hub.py assistant --capture-only --diagnostic
+```
+
+Gọi “Maika ơi”, chờ tiếng đáp và `[LISTEN TURN]`, rồi nói một câu. Chương
+trình giữ đầu câu, tự chốt sau khoảng 0,7 giây im lặng và in `[TURN] captured
+... s`. Chờ nói tối đa 8 giây, mỗi lượt tối đa 30 giây; quá hạn/mất audio
+thì bỏ lượt và yêu cầu nói lại. Mặc định chỉ giữ PCM trong RAM.
+
+Chế độ này chưa STT/phát câu đáp động cho lượt đã thu. Chạy không có
+`--capture-only` để dùng luồng log câu STT bên dưới. Cấu hình `turn`, cách
+tự kiểm tra, WAV chẩn đoán opt-in và giới hạn: [turn-capture.md](docs/turn-capture.md).
+
+```bash
+python3 scripts/smart_hub.py assistant --capture-only --mock
+```
+
+## Chạy: wake → đáp → xem câu lệnh nhận được
+
+Thêm lệnh `assistant`, dùng lại STT và giọng VieNeu đã chọn. Mic có một luồng
+thu xuyên suốt; STT và playback xử lý riêng; buffer tối đa 500 ms. Chạy:
+
+```bash
+cd /home/mrhoan/source/wake-work/smart-hub
+.venv/bin/python scripts/smart_hub.py assistant
+```
+
+Chờ `[READY ASSISTANT]`, nói **“Maika ơi”**, nghe **“em nghe”**. Khi hiện
+**`[LISTEN COMMAND]`**, nói một câu ngắn, ví dụ **“bật đèn phòng khách”**,
+rồi ngừng nói khoảng một giây. STT in kết quả một lần và trở lại chờ wake:
+
+```text
+[WAKE] detected at 2026-09-13 20:30:00
+[LISTEN COMMAND] Nói một câu trong 8 giây.
+[COMMAND] BẬT ĐÈN PHÒNG KHÁCH
+[READY ASSISTANT] Đang nghe ‘Maika ơi’; Ctrl+C để dừng.
+```
+
+Đây là ví dụ định dạng, nội dung thực tế tùy STT. Cửa sổ mặc định **8 giây**,
+tính sau khi phát xong và bỏ tiếng vọng 0,1 giây. Hết hạn chưa có câu hoàn
+chỉnh sẽ hiện `[COMMAND TIMEOUT]` rồi chờ wake tiếp. Mỗi lần wake nhận một
+đoạn nói; Ctrl+C để dừng. Chưa hỗ trợ nói liền “Maika ơi, bật đèn…” hoặc nói
+chen trong tiếng đáp: hãy đợi `[LISTEN COMMAND]` để tránh mất đầu câu.
+
+STT nhận câu tiếng Việt nói chung: quạt, đèn, điều hòa, âm lượng, hẹn giờ…
+Phần nghe lệnh dùng thông số tách giọng riêng, giữ thêm 0,64 giây đầu câu
+và nâng mức audio nhỏ có giới hạn. Wake mặc định giữ mức `standard`. Cách tự thử
+nhiều câu khác nhau và chỉnh `COMMAND_*` nằm trong
+[hướng dẫn nghe lệnh](docs/command-transcript.md#chỉnh-thông-số-cho-lệnh-ngắn).
+Benchmark tổng hợp đạt 25/30 câu khớp hoàn toàn, còn lỗi được ghi rõ trong
+hướng dẫn; chưa thay thế kiểm thử giọng thật trên mic của bạn.
+
+```bash
+# Chờ câu nói lâu hơn (tối đa 30 giây)
+.venv/bin/python scripts/smart_hub.py assistant --command-seconds 12
+
+# Quay về vòng chỉ wake và đáp, không log câu lệnh
+.venv/bin/python scripts/smart_hub.py assistant --wake-only
+
+# Thử giọng nhỏ/ngắn; hiện chữ STT trước wake để biết model nghe thành gì
+.venv/bin/python scripts/smart_hub.py assistant --wake-profile sensitive --show-wake-text --diagnostic
+
+# Nếu nhận tiếng vọng của “em nghe”, tăng khoảng chờ từ 0.1 lên 0.3 giây
+.venv/bin/python scripts/smart_hub.py assistant --reply-guard 0.3
+```
+
+`--wake-profile sensitive` là tùy chọn thử giọng nhỏ, chưa được nghiệm thu
+với giọng trẻ em. `--show-wake-text` có thể hiện cả hội thoại nền; bỏ tùy chọn
+này khi dùng bình thường. Luôn cần đủ cụm “Maika ơi”. Xem
+[cách thử và kế hoạch thu mẫu từng người](docs/command-transcript.md#wake-giọng-nhỏ-và-khoảng-chờ-sau-tiếng-đáp).
+
+File “em nghe” đã bỏ 0,239 giây im lặng cuối, giữ nguyên âm giọng; cùng
+guard ngắn hơn, giảm khoảng 0,839 giây chờ cố định. VAD lệnh được nạp trước
+READY. Chưa đo tổng độ trễ thực tế của mic/loa sau thay đổi này.
+
+Không cần cài thêm dependency hay tải model so với `listen-stt`. Mặc định
+chỉ nội dung sau wake được in ra terminal; chương trình không tự lưu audio/transcript
+vào file, không gửi cloud và không điều khiển thiết bị.
+
+```bash
+python3 scripts/smart_hub.py assistant --mock
+.venv/bin/python scripts/run_tests.py --runtime
+.venv/bin/python scripts/run_tests.py
+python3 scripts/run_tests.py --mock
+```
+
+Mock chạy 3 chu kỳ wake → đáp giả → log lệnh → chờ wake, không cần
+microphone/model/loa hay numpy. Xem [cách kiểm tra câu lệnh](docs/command-transcript.md)
+và [runtime Phase 1](docs/runtime-phase1.md). `listen-stt` và `listen` vẫn chỉ
+wake/đáp, có thể chạy độc lập. Chỉ mở một listener tại một thời điểm.
+
+## Chạy bản STT mới — không cần thu mẫu giọng cá nhân
+
+Máy hiện tại đã cài dependency và model. Chạy:
+
+```bash
+cd /home/mrhoan/source/wake-work/smart-hub
+.venv/bin/python scripts/smart_hub.py listen-stt
+```
+
+Chờ `[READY STT]`, nói **“Maika ơi”**, nghe **“em nghe”**, rồi chờ ít nhất
+5 giây trước lượt gọi tiếp theo. Chương trình tiếp tục nghe đến khi Ctrl+C.
+Chỉ “Maika” không đủ kích hoạt. STT có thể viết tên thành `mai ca ơi` hoặc
+`mai ka ơi`; hai cách viết này được chấp nhận nhưng vẫn phải có `ơi`.
+Không bỏ dấu tiếng Việt hoặc so khớp gần đúng tùy ý.
+
+Luồng mới: mic → Silero VAD → Zipformer tiếng Việt 30M INT8 trên CPU → khớp
+cụm → event + WAV. Cài trên máy mới, từ thư mục project:
+
+```bash
+python3 scripts/setup_env.py
+.venv/bin/python -m pip install -r requirements-stt.txt
+python3 scripts/download_stt_models.py
+.venv/bin/python -m pip check
+.venv/bin/python scripts/smart_hub.py check-mic --seconds 5
+.venv/bin/python scripts/run_tests.py --stt
+```
+
+Hai package bổ sung là `sherpa-onnx` (API STT/VAD) và `sherpa-onnx-core`
+(runtime native CPU), cùng phiên bản 1.13.8; wheel trên máy này khoảng 15 MB.
+Tận dụng numpy/arecord hiện có; không cần GPU, PyTorch hay SDK cloud. Các file
+STT/VAD/token khoảng 33 MiB sau tải, có kiểm tra SHA-256; được bỏ qua khi commit.
+Chỉ lệnh cài/tải model cần mạng; listener không gọi mạng, lưu audio hay lưu
+transcript. `--show-text` chỉ hiện transcript local khi bạn chủ động yêu cầu.
+
+Test mock bằng Python hệ thống:
+
+```bash
+python3 scripts/smart_hub.py listen-stt --mock
+python3 scripts/run_tests.py --mock
+```
+
+Để tự xem STT đang nghe thành chữ gì và kiểm tra mỗi lần gọi:
+
+```bash
+.venv/bin/python scripts/smart_hub.py listen-stt --show-text --diagnostic
+```
+
+Hướng dẫn đếm lượt, thử người khác, tiếng nền và đọc PASS/FAIL:
+**[docs/stt-wake.md](docs/stt-wake.md)**. Các test tự động và kiểm tra capture
+đã chạy; người dùng đã xác nhận gọi/đáp với giọng thật. Kiểm thử định lượng
+nhiều người và tiếng nền vẫn cần thực hiện riêng.
+
+Lệnh `listen` bên dưới vẫn là engine mẫu giọng cá nhân để đối chiếu hoặc quay
+lại khi cần. `validate-live` cũng kiểm tra engine cá nhân, không phải STT.
+
+## Thu mẫu để kiểm tra STT theo từng người
+
+Dừng listener đang chạy, đứng ở khoảng cách thường dùng với mic. Chạy từng
+lệnh riêng khi người nói tương ứng đã sẵn sàng:
+
+```bash
+.venv/bin/python scripts/record_wake_samples.py --speaker adult
+.venv/bin/python scripts/record_wake_samples.py --speaker child
+```
+
+Sau khoảng 7 giây chuẩn bị, mỗi tiếng tít mở một lượt thu 5 giây: nói
+**“Maika ơi” đúng một lần**, rồi im lặng. Tổng cộng 5 lượt, khoảng 40 giây;
+có thể dùng `--takes 1` để thử một lượt hoặc Ctrl+C để dừng.
+
+WAV mono 16-bit/16 kHz và thông tin từng lượt được lưu riêng trong
+`recordings/<thời-gian>-<adult|child>-<mã>/`, được Git bỏ qua. Công cụ đóng mic
+sau khi thu, không đổi gain hay model. Cần kiểm tra nội dung và xác nhận người
+nói trước khi dùng mẫu đối chiếu. Thu 5 mẫu **không tự huấn luyện lại STT** và
+không thay mẫu của engine `listen`.
+
+## Chế độ mẫu giọng cá nhân (`listen`)
 
 Bản thử nghiệm nhận **“Maika ơi” bằng mẫu giọng nói của bạn**, không cần
 model wake word tiếng Anh hoặc tài khoản cloud. Engine mặc định dùng
@@ -106,6 +286,29 @@ Một phiên tiếp tục đã thấy gain trở lại +30/+30 dB; sau thông b�
 0/0 dB. Ngày 2026-09-13 đã xác định mức mic PipeWire vẫn ở 100%, tuyến input
 chưa lưu volume (`save=false`, chưa có mục input trong state WirePlumber).
 Chỉ chỉnh `amixer` trước đó chưa lưu mức mong muốn vào trình quản lý audio.
+
+### Nếu assistant im lặng và log có `clipping > 0`
+
+Clipping là tín hiệu chạm giới hạn biên độ. STT bỏ frame/đoạn bị lỗi và xóa
+audio đang giữ; vì vậy mic có thể thu được tiếng nhưng không tạo `[WAKE]`.
+`assistant` hiện cảnh báo `[AUDIO WARNING]` ngay lần clipping đầu tiên trong
+phiên, không đợi tới Ctrl+C mới thấy số đếm.
+
+Trong sự cố ngày 2026-09-13, log người dùng có `0 wake; clipping=205`.
+Đo ALSA cho thấy Capture **+24,75 dB**, trong khi mức đã hoạt động ổn là
+**0 dB**. Đã thông báo rồi đưa đúng mic tích hợp từ PipeWire 27% về 10%,
+kiểm tra lại Capture 0 dB. Chưa xác định tác nhân đã tăng gain.
+
+Kiểm tra khi **đang nói**, vì một lượt đo yên lặng có thể không clipping dù
+giọng nói vẫn bị vỡ. Sau khi dừng listener, chạy:
+
+```bash
+.venv/bin/python scripts/smart_hub.py check-mic --seconds 10
+```
+
+Đợi khoảng 2 giây ổn định mic rồi nói “Maika ơi” vài lần trong lượt đo.
+TEST 2 chỉ kiểm tra tín hiệu, chưa phải xác nhận wake. Cách kiểm tra/chỉnh
+gain cho microphone tích hợp của máy này ở phần tiếp theo.
 
 ### Nếu listen báo Audio clipping
 
@@ -334,10 +537,10 @@ python3 scripts/smart_hub.py listen --mock
 python3 scripts/run_tests.py --mock
 ```
 
-Mock tạo hai đợt score kích hoạt kéo dài và kiểm tra chỉ có 2 event. Ghi rõ
+Mock `listen` tạo hai đợt score kích hoạt kéo dài và kiểm tra chỉ có 2 event. Ghi rõ
 `[MOCK]` trên stderr, không mở microphone, không cần model hoặc numpy.
 
-## Phạm vi và giới hạn
+## Phạm vi và giới hạn của engine mẫu giọng (`listen`)
 
 - Neural dùng cửa sổ trượt để xử lý tiếng nền liên tục; chưa xác nhận câu gọi
   nằm giữa mọi dạng hội thoại dài. Câu gọi nên nằm gọn trong khoảng 1,3 giây.
@@ -355,3 +558,7 @@ Tham khảo baseline: [MFCC](https://librosa.org/doc/0.11.0/generated/librosa.fe
 [DTW](https://librosa.org/doc/0.11.0/generated/librosa.sequence.dtw.html).
 
 Kết quả nghiệm thu và quyết định kỹ thuật: [docs/milestone-1.md](docs/milestone-1.md).
+
+Kết quả phiên mới: [baseline M1](docs/baseline-m1.md),
+[bản STT và cách tự kiểm thử](docs/stt-wake.md), [kiến trúc](docs/architecture.md).
+Tình trạng giấy phép mã nguồn và model: [docs/licensing.md](docs/licensing.md).

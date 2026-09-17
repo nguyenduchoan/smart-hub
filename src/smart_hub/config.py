@@ -1,8 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import math
 from pathlib import Path
 import unicodedata
+
+from .turn import TurnSettings
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -28,8 +30,11 @@ class Config:
     silence_seconds: float = 0.4
     min_speech_seconds: float = 0.35
     max_speech_seconds: float = 2.5
+    turn: TurnSettings = field(default_factory=TurnSettings)
 
     def __post_init__(self):
+        if not isinstance(self.turn, TurnSettings):
+            raise ValueError("turn cần là cấu hình lượt hội thoại hợp lệ.")
         if self.engine not in ("neural", "dtw"):
             raise ValueError("engine chỉ hỗ trợ neural hoặc dtw.")
         if not isinstance(self.feedback_enabled, bool):
@@ -62,6 +67,10 @@ def load_config(path=ROOT / "config.json"):
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("Cấu hình phải là JSON object.")
+    if "turn" in data:
+        if not isinstance(data["turn"], dict):
+            raise ValueError("turn phải là JSON object.")
+        data["turn"] = TurnSettings(**data["turn"])
     for name in ["model_path", "backbone_path", "negative_path", "feedback_path"]:
         if name in data:
             data[name] = (path.parent / data[name]).resolve()

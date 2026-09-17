@@ -1,0 +1,88 @@
+{
+  "model": "pnnbao-ump/VieNeu-TTS-v3-Nano",
+  "model_revision": "aba295eb96a6fa6003ebe417cc1f2802a7adc1dc",
+  "source_revision": "3206ed960e317e69bfe09f9d553aecbf1090f32e",
+  "seed": 42,
+  "sample_rate": 16000,
+  "peak_ceiling_dbfs": -6.02,
+  "generated_locally": true,
+  "resampler": "Python 3.11 audioop.ratecv, 24000 -> 16000 Hz",
+  "trailing_silence_seconds": 1.0,
+  "clips": [
+    {
+      "file": "bat_den.wav",
+      "text": "Bật đèn phòng khách.",
+      "expected_text": "BẬT ĐÈN PHÒNG KHÁCH",
+      "voice": "Trúc Ly",
+      "sha256": "5eaec38da7186ad8224fcd7dd052824c093f3ae13d74e53db8007513515b59bf"
+    },
+    {
+      "file": "tat_den.wav",
+      "text": "Tắt đèn nhà bếp.",
+      "expected_text": "TẮT ĐÈN NHÀ BẾP",
+      "voice": "Trúc Ly",
+      "sha256": "1049017494e244c461ef90ad2ad21b183bd744702afa1f040eaf89b65dbaad0c"
+    },
+    {
+      "file": "tang_am.wav",
+      "text": "Tăng âm lượng.",
+      "expected_text": "TĂNG ÂM LƯỢNG",
+      "voice": "Trúc Ly",
+      "sha256": "d4022fa1dcd75201a856cf5b480ad1966667b80d23ccf799368f38e9a9b98d74"
+    },
+    {
+      "file": "giam_am.wav",
+      "text": "Giảm âm lượng.",
+      "expected_text": "GIẢM ÂM LƯỢNG",
+      "voice": "Trúc Ly",
+      "sha256": "a16684eb204611e0cbce6050f5646d1278568c0f5578c699e99804d86be48e4b"
+    },
+    {
+      "file": "dieu_hoa.wav",
+      "text": "Mở điều hòa.",
+      "expected_text": "MỞ ĐIỀU HÒA",
+      "voice": "Đức Trí",
+      "sha256": "54307e71764b3888df5a1faef07cb8c42bbd992753abddc7573322fa007b2855"
+    },
+    {
+      "file": "nhiet_do.wav",
+      "text": "Chỉnh nhiệt độ hai mươi lăm độ.",
+      "expected_text": "CHỈNH NHIỆT ĐỘ HAI MƯƠI LĂM ĐỘ",
+      "voice": "Đức Trí",
+      "sha256": "f80925c314862d2f50057ea92cf2b24168141c85bcb78a6c98bac33935ff5d2a"
+    },
+    {
+      "file": "dong_rem.wav",
+      "text": "Đóng rèm cửa.",
+      "expected_text": "ĐÓNG RÈM CỬA",
+      "voice": "Đức Trí",
+      "sha256": "84efb7ac6f407d4072b760b84d35a3984f7e5a779935187d1b5c5c1240c47531"
+    },
+    {
+      "file": "hen_gio.wav",
+      "text": "Hẹn giờ năm phút.",
+      "expected_text": "HẸN GIỜ NĂM PHÚT",
+      "voice": "Đức Trí",
+      "sha256": "d08f938ec7797b07c23483be347e5e218faa4b467ae58a2601ff85e84df3749c"
+    },
+    {
+      "file": "bat_quat.wav",
+      "text": "Bật quạt.",
+      "expected_text": "BẬT QUẠT",
+      "sha256": "4daa788afc801fa8b1b6ba2dcd1d7a13963ddd863aee78353d50a75d6ea7296b",
+      "voice": "Trúc Ly"
+    },
+    {
+      "file": "tat_quat.wav",
+      "text": "Tắt quạt.",
+      "expected_text": "TẮT QUẠT",
+      "sha256": "c8fc3bbf88af36318a4fdf0a9a472ff9101c0b8a8a83a87db03c5abf0bc10e85",
+      "voice": "Trúc Ly"
+    }
+  ],
+  "synthetic_test_only": true,
+  "voices": [
+    "Trúc Ly",
+    "Đức Trí"
+  ]
+}

@@ -175,28 +175,32 @@ def listen(config, args):
     from .feedback import VoiceFeedback, feed_audio
     engine = create_engine(config)
     event_sink = emit_diagnostic if args.diagnostic else emit
-    if args.wav:
-        detector = create_detector(config, engine, event_sink)
-        for frame in wav_frames(args.wav):
-            detector.feed(frame)
-    else:
-        noise = calibrate(config.device)
-        context = closing(VoiceFeedback(config.feedback_path, config.playback_device)) if config.feedback_enabled else nullcontext(None)
-        with context as player:
-            def on_wake(event):
-                event_sink(event)
-                if player:
-                    player.play()
-            detector = create_detector(config, engine, on_wake, noise)
-            with AlsaCapture(config.device) as source:
-                status(f"[READY] Đang nghe ‘{config.wake_word}’. Ctrl+C để dừng.")
-                deadline = time.monotonic() + args.seconds if args.seconds else math.inf
-                while time.monotonic() < deadline:
-                    feed_audio(detector, source.read_frame(), player)
-    status(f"[STOP] {detector.events} wake event; score cao nhất {detector.max_score:.3f}; "
-           f"loại {detector.rejected_clipping} lượt bị clipping.")
-    if args.diagnostic:
-        diagnostic_scores(detector)
+    detector = None
+    try:
+        if args.wav:
+            detector = create_detector(config, engine, event_sink)
+            for frame in wav_frames(args.wav):
+                detector.feed(frame)
+        else:
+            noise = calibrate(config.device)
+            context = closing(VoiceFeedback(config.feedback_path, config.playback_device)) if config.feedback_enabled else nullcontext(None)
+            with context as player:
+                def on_wake(event):
+                    event_sink(event)
+                    if player:
+                        player.play()
+                detector = create_detector(config, engine, on_wake, noise)
+                with AlsaCapture(config.device) as source:
+                    status(f"[READY] Đang nghe ‘{config.wake_word}’. Ctrl+C để dừng.")
+                    deadline = time.monotonic() + args.seconds if args.seconds else math.inf
+                    while time.monotonic() < deadline:
+                        feed_audio(detector, source.read_frame(), player)
+    finally:
+        if detector is not None:
+            status(f"[STOP] {detector.events} wake event; score cao nhất {detector.max_score:.3f}; "
+                   f"loại {detector.rejected_clipping} lượt bị clipping.")
+            if args.diagnostic:
+                diagnostic_scores(detector)
     if args.expect_events is not None:
         passed = detector.events == args.expect_events
         status(f"[TEST] {'PASS' if passed else 'FAIL'}: {detector.events}/{args.expect_events} event mong đợi.")
@@ -306,8 +310,29 @@ def positive_seconds(value):
     return number
 
 
+def listening_seconds(value):
+    number = float(value)
+    if not math.isfinite(number) or not 0 < number <= 86400:
+        raise argparse.ArgumentTypeError("Cần 0 < seconds <= 86400.")
+    return number
+
+
+def command_seconds(value):
+    number = float(value)
+    if not math.isfinite(number) or not 0 < number <= 30:
+        raise argparse.ArgumentTypeError("Cần 0 < command-seconds <= 30.")
+    return number
+
+
+def reply_guard_seconds(value):
+    number = float(value)
+    if not math.isfinite(number) or not 0 <= number <= 2:
+        raise argparse.ArgumentTypeError("Cần 0 <= reply-guard <= 2 giây.")
+    return number
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Milestone 1: wake word local bằng mẫu giọng nói.")
+    parser = argparse.ArgumentParser(description="Smart Hub: wake word local trên CPU.")
     parser.add_argument("--config", type=Path, default=ROOT / "config.json")
     sub = parser.add_subparsers(dest="command", required=True)
     check = sub.add_parser("check-mic", help="Liệt kê input và kiểm tra capture/clipping.")
@@ -325,6 +350,38 @@ def main(argv=None):
     live.add_argument("--seconds", type=positive_seconds)
     live.add_argument("--expect-events", type=int, help="Trả mã lỗi nếu số event không khớp (ví dụ 0 cho test âm tính).")
     live.add_argument("--diagnostic", action="store_true", help="In thêm score của event trên stderr.")
+    stt = sub.add_parser("listen-stt", help="Thử wake bằng STT tiếng Việt local trên CPU; không cần enrollment.")
+    stt_sources = stt.add_mutually_exclusive_group()
+    stt_sources.add_argument("--mock", action="store_true")
+    stt_sources.add_argument("--wav", type=Path)
+    stt.add_argument("--seconds", type=listening_seconds)
+    stt.add_argument("--expect-events", type=int)
+    stt.add_argument("--diagnostic", action="store_true", help="In thời gian STT; không in nội dung lời nói.")
+    stt.add_argument("--show-text", action="store_true", help="Hiện transcript local trên stderr để tự kiểm tra; không lưu file.")
+    stt.add_argument("--alias", action="append", default=[], help="Cách viết khác của đủ cụm gọi, ví dụ 'mai ca ơi'.")
+    stt.add_argument("--no-feedback", action="store_true", help="Tắt loa chỉ trong phiên kiểm thử này.")
+    assistant = sub.add_parser("assistant", help="Wake STT -> đáp cố định -> log một câu lệnh -> chờ wake.")
+    assistant.add_argument("--mock", action="store_true", help="Ba chu kỳ giả lập, không cần mic/model/loa.")
+    assistant.add_argument("--seconds", type=listening_seconds)
+    assistant.add_argument("--expect-events", type=int)
+    assistant.add_argument("--diagnostic", action="store_true", help="Hiện thêm trạng thái và thống kê buffer.")
+    assistant.add_argument("--wake-profile", choices=("standard", "sensitive"), default="standard",
+                           help="standard giữ mức cũ; sensitive thử giọng nhỏ/ngắn (mặc định standard).")
+    assistant.add_argument("--show-wake-text", action="store_true",
+                           help="Hiện chữ STT trước wake để kiểm tra giọng chưa nhận; có thể gồm hội thoại nền.")
+    assistant.add_argument("--reply-guard", type=reply_guard_seconds, default=0.1,
+                           help="Chờ tiếng vọng sau khi phát đáp, 0–2 giây (mặc định 0.1).")
+    assistant.add_argument("--buffer-ms", type=int, choices=range(20, 501, 20), default=500,
+                           help="PCM chờ xử lý tối đa, 20–500 ms (mặc định 500).")
+    assistant.add_argument("--no-feedback", action="store_true", help="Tắt loa chỉ trong phiên kiểm thử này.")
+    assistant.add_argument("--command-seconds", type=command_seconds, default=8.0,
+                           help="Cửa sổ nghe một câu lệnh sau tiếng đáp, tối đa 30 giây (mặc định 8).")
+    assistant_mode = assistant.add_mutually_exclusive_group()
+    assistant_mode.add_argument("--wake-only", action="store_true", help="Chỉ wake và đáp; tắt bước nghe/log lệnh.")
+    assistant_mode.add_argument("--capture-only", action="store_true",
+                                help="Thu trọn một lượt nói sau wake; tự chốt khi im lặng và in thời lượng.")
+    assistant.add_argument("--debug-recordings", action="store_true",
+                           help="Lưu WAV lượt hoàn chỉnh vào recordings/; chỉ dùng cùng --capture-only.")
     verify = sub.add_parser("validate-live", help="Chạy TEST 1–5 với microphone và lời nói mới.")
     verify.add_argument("--attempts", type=int, choices=range(1, 11), default=3)
     verify.add_argument("--seconds", type=positive_seconds, default=5)
@@ -335,8 +392,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "enroll" and args.fixed_windows and args.seconds < 2:
         parser.error("--fixed-windows cần --seconds >= 2.")
-    if args.command == "listen" and args.expect_events is not None and args.expect_events < 0:
+    if args.command in ("listen", "listen-stt", "assistant") and args.expect_events is not None and args.expect_events < 0:
         parser.error("--expect-events phải >= 0.")
+    if args.command == "listen-stt" and args.wav and args.seconds is not None:
+        parser.error("--wav đọc hết file; không kết hợp --seconds.")
+    if args.command == "assistant" and args.debug_recordings and not args.capture_only:
+        parser.error("--debug-recordings cần --capture-only.")
+    if args.command == "assistant" and args.debug_recordings and args.mock:
+        parser.error("--mock không ghi file audio; bỏ --debug-recordings.")
 
     def stop(*_):
         raise KeyboardInterrupt
@@ -349,6 +412,12 @@ def main(argv=None):
             return enroll(config, args)
         if args.command == "listen":
             return listen(config, args)
+        if args.command == "listen-stt":
+            from .stt_wake import run
+            return run(config, args, emit, status)
+        if args.command == "assistant":
+            from .assistant import run
+            return run(config, args, emit, status)
         if args.command == "enroll-negative":
             return enroll_negative(config, args)
         if args.command == "test-feedback":
@@ -362,9 +431,16 @@ def main(argv=None):
         return validate_live(config, args)
     except KeyboardInterrupt:
         status("[STOP] Đã dừng và đóng capture.")
-        return 0 if args.command == "listen" else 130
+        if args.command in ("listen", "listen-stt", "assistant"):
+            if args.expect_events is not None:
+                status("[TEST] INCOMPLETE: bài thử bị ngắt; không tính là PASS.")
+                return 130
+            return 0
+        return 130
     except ImportError as exc:
-        status(f"[FAIL] Thiếu dependency: {exc}. Chạy scripts/setup_env.py rồi dùng .venv/bin/python.")
+        hint = ("Chạy .venv/bin/python -m pip install -r requirements-stt.txt."
+                if args.command in ("listen-stt", "assistant") else "Chạy scripts/setup_env.py rồi dùng .venv/bin/python.")
+        status(f"[FAIL] Thiếu dependency: {exc}. {hint}")
         return 1
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, EOFError, subprocess.TimeoutExpired) as exc:
         status(f"[FAIL] {exc}")

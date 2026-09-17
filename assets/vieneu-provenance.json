@@ -10,5 +10,14 @@
     "em_day_vieneu.wav": "Em đây."
   },
   "peak_ceiling_dbfs": -6.02,
-  "generated_locally": true
+  "generated_locally": true,
+  "postprocessing": {
+    "em_nghe_vieneu.wav": {
+      "operation": "Trim exact digital silence at EOF; retain 50 ms; all nonzero PCM preserved",
+      "date": "2026-09-13",
+      "original_sha256": "35b691b4b5b01a01aec67f813c03cf2d57483363b3f3bb2312f636e1a154d524",
+      "sha256": "48eab3b60071472347ae1c129983306aae15f5c0969340a116001bd21da853e7",
+      "removed_seconds": 0.238625
+    }
+  }
 }

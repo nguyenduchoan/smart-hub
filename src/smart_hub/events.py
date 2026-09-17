@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import math
 
@@ -12,6 +12,98 @@ class WakeEvent:
 
     def line(self):
         return f"[WAKE] detected at {self.detected_at:%Y-%m-%d %H:%M:%S}"
+
+
+@dataclass(frozen=True)
+class AudioFrame:
+    sequence: int
+    sample_offset: int
+    captured_at: float  # Monotonic read completion, not an ALSA hardware timestamp.
+    pcm: bytes = field(repr=False)
+    sample_rate: int = 16000
+    channels: int = 1
+    format: str = "S16_LE"
+    continuity_id: int = 0  # Snapshot taken atomically when handed to the loop.
+
+    @property
+    def end_sample(self):
+        return self.sample_offset + len(self.pcm) // 2
+
+
+@dataclass(frozen=True)
+class AudioGap:
+    start_sample: int
+    end_sample: int
+    dropped_frames: int
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorkContext:
+    session_id: str
+    generation_id: int
+    turn_id: str | None = None
+
+
+@dataclass(frozen=True)
+class WakeDetected:
+    context: WorkContext
+    wake: WakeEvent
+
+
+@dataclass(frozen=True)
+class CommandRecognized:
+    context: WorkContext
+    text: str = field(repr=False)
+
+    def line(self):
+        return "[COMMAND] " + " ".join(self.text.split())
+
+
+@dataclass(frozen=True)
+class UserTurnReady:
+    context: WorkContext
+    pcm: bytes = field(repr=False)
+    sample_rate: int = 16000
+
+    @property
+    def duration(self):
+        return len(self.pcm) / (self.sample_rate * 2)
+
+    def line(self):
+        return f"[TURN] captured {self.duration:.2f} s"
+
+
+@dataclass(frozen=True)
+class UserTurnAborted:
+    context: WorkContext
+    reason: str
+
+
+@dataclass(frozen=True)
+class AssistantStateChanged:
+    context: WorkContext
+    previous: str
+    current: str
+
+
+@dataclass(frozen=True)
+class PlaybackStarted:
+    context: WorkContext
+    at: float
+
+
+@dataclass(frozen=True)
+class PlaybackStopped:
+    context: WorkContext
+    at: float
+    interrupted: bool = False
+
+
+@dataclass(frozen=True)
+class RuntimeErrorEvent:
+    context: WorkContext
+    message: str
 
 
 class WakeGate:

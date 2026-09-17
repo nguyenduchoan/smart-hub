@@ -1,0 +1,4 @@
+# Optional Vietnamese STT wake trigger; CPU only, Python 3.11 on Debian x86_64.
+-r requirements.txt
+sherpa-onnx==1.13.8
+sherpa-onnx-core==1.13.8

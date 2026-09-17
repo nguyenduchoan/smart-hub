@@ -1,12 +1,16 @@
 """Play a fixed local acknowledgement without blocking microphone capture."""
 from pathlib import Path
+import math
 import subprocess
 import time
 import wave
 
 
 class VoiceFeedback:
-    def __init__(self, path, device="pipewire", clock=time.monotonic):
+    def __init__(self, path, device="pipewire", clock=time.monotonic, *, echo_guard_seconds=0.7):
+        if not math.isfinite(echo_guard_seconds) or not 0 <= echo_guard_seconds <= 2:
+            raise ValueError("Khoảng chờ tiếng vọng cần từ 0 đến 2 giây.")
+        self.echo_guard_seconds = echo_guard_seconds
         self.path = Path(path)
         self.device = device
         self.clock = clock
@@ -43,7 +47,7 @@ class VoiceFeedback:
             self.process = None
             if result:
                 raise RuntimeError(f"Không phát được phản hồi: {error}")
-            self.until = self.clock() + 0.7  # Allow room echo to decay.
+            self.until = self.clock() + self.echo_guard_seconds
         return self.clock() < self.until
 
     def close(self):

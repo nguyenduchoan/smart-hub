@@ -4,8 +4,10 @@ __pycache__/
 recordings/
 models/*.npz
 models/*.onnx
+models/stt/
 config.local.json
 .voice-tools/
+.experiments/
 .env
 .env.*
 !.env.example
