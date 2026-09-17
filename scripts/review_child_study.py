@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Công cụ duyệt, nghe lại và quản lý nhãn dữ liệu giọng trẻ em (CV-02, CV-06)."""
 import argparse
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,42 @@ from smart_hub.child_study import (
 )
 
 
+def verify_audio_file(path, expected_sha=None):
+    """Verify audio file exists, has correct 16kHz mono 16-bit PCM format and matches SHA-256.
+    Returns (ok, error_message, stats).
+    """
+    p = Path(path)
+    if not p.is_file():
+        return False, f"File audio không tồn tại: {p}", None
+
+    try:
+        actual_sha = compute_file_sha256(p)
+    except Exception as exc:
+        return False, f"Lỗi đọc file: {exc}", None
+
+    if expected_sha and actual_sha.lower() != str(expected_sha).lower():
+        return (
+            False,
+            f"SHA-256 mismatch (kỳ vọng {expected_sha[:12]}..., thực tế {actual_sha[:12]}...)",
+            None,
+        )
+
+    try:
+        with wave.open(str(p), "rb") as w:
+            if (w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getcomptype()) != (1, 2, RATE, "NONE"):
+                return False, "WAV không đúng chuẩn 16kHz mono 16-bit PCM", None
+            nframes = w.getnframes()
+            pcm = w.readframes(nframes)
+            if len(pcm) != nframes * 2 or len(pcm) == 0:
+                return False, "WAV rỗng hoặc bị cắt cụt", None
+            stats = pcm_stats(pcm)
+            stats["seconds"] = nframes / RATE
+            stats["sha256"] = actual_sha
+            return True, "OK", stats
+    except Exception as exc:
+        return False, f"Lỗi đọc dữ liệu WAV: {exc}", None
+
+
 def print_summary():
     labels = load_labels()
     sessions = load_sessions()
@@ -38,14 +75,11 @@ def print_summary():
         print("Chưa có mẫu nào được ghi nhận trong labels.jsonl.")
         return
 
-    # Counts by split, label, review_status
     splits = {}
     for l in labels:
         s = l.get("split", "unknown")
         lbl = l.get("label", "unknown")
-        rev = l.get("review_status", "pending")
         spk = l.get("speaker_id", "unknown")
-
         key = (s, spk, lbl)
         splits[key] = splits.get(key, 0) + 1
 
@@ -63,10 +97,37 @@ def print_summary():
         print(f"- {st}: {c} mẫu")
 
 
-def review_session(target_dir=None, target_session=None, auto_accept=False, reviewer="QC"):
+def update_session_review_status(session_ids, reviewer, sessions_file=None, labels_file=None):
+    """Update sessions.json to reflect that review was conducted by reviewer."""
+    if not session_ids:
+        return
+    sessions = load_sessions(sessions_file)
+    all_labels = load_labels(labels_file)
+
+    now_iso = datetime.now().astimezone().isoformat()
+    for s_id in session_ids:
+        sess = next((s for s in sessions if s.get("session_id") == s_id), None)
+        if sess:
+            sess_labels = [l for l in all_labels if l.get("session_id") == s_id]
+            accepted_cnt = sum(1 for l in sess_labels if l.get("review_status") == "accepted")
+            rejected_cnt = sum(1 for l in sess_labels if l.get("review_status") == "rejected")
+            total_cnt = len(sess_labels)
+
+            sess["reviewer"] = reviewer
+            sess["reviewed_at"] = now_iso
+            if accepted_cnt + rejected_cnt == total_cnt and total_cnt > 0:
+                sess["status"] = "reviewed"
+            else:
+                sess["status"] = "partially_reviewed"
+            sess["notes"] = (
+                f"Đã duyệt bởi {reviewer}: {accepted_cnt} accepted, {rejected_cnt} rejected trên {total_cnt} mẫu."
+            )
+            save_session(sess, sessions_file)
+
+
+def review_session(target_dir=None, target_session=None, auto_qc=False, reviewer="QC"):
     config = load_config()
     labels = load_labels()
-    sessions = load_sessions()
 
     # Find matching labels
     matching = []
@@ -81,10 +142,15 @@ def review_session(target_dir=None, target_session=None, auto_accept=False, revi
         dir_path = Path(target_dir) if Path(target_dir).is_absolute() else (ROOT / target_dir)
         manifest_file = dir_path / "manifest.json"
         if manifest_file.exists():
-            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            try:
+                manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                print(f"[ERROR] Malformed manifest: {exc}", file=sys.stderr)
+                return
             rel_dir = str(dir_path.relative_to(ROOT))
             session_id = manifest.get("session_id", dir_path.name)
-            speaker_id = manifest.get("speaker_id", f"{manifest.get('speaker_label', 'child')}_01")
+            speaker_id = manifest.get("speaker_id", "unknown")
+            speaker_label = manifest.get("speaker_label", "child")
             split = manifest.get("split", "pilot")
             label = manifest.get("label", "positive")
             expected_phrase = manifest.get("expected_phrase", config.wake_word)
@@ -98,6 +164,7 @@ def review_session(target_dir=None, target_session=None, auto_accept=False, revi
                     "source": wav_path,
                     "source_sha256": clip.get("sha256", ""),
                     "speaker_id": speaker_id,
+                    "speaker_label": speaker_label,
                     "speaker_confirmed": False,
                     "session_id": session_id,
                     "split": split,
@@ -115,69 +182,102 @@ def review_session(target_dir=None, target_session=None, auto_accept=False, revi
         print("[INFO] Không tìm thấy mẫu nào cần duyệt.")
         return
 
+    reviewed_sessions = set()
     print(f"=== BẮT ĐẦU DUYỆT {len(matching)} MẪU ===")
     for idx, item in enumerate(matching, start=1):
-        wav_full = ROOT / item["source"]
+        wav_full = Path(item["source"])
+        if not wav_full.is_absolute():
+            wav_full = ROOT / wav_full
+
         print(f"\n[{idx}/{len(matching)}] Mẫu: {item['sample_id']}")
         print(f"  Source: {item['source']}")
-        print(f"  Người nói: {item['speaker_id']} | Nhãn: {item['label']} | Câu: '{item['transcript_human']}'")
+        print(f"  Người nói: {item['speaker_id']} ({item.get('speaker_label', 'unknown')}) | Nhãn: {item['label']} | Câu: '{item.get('transcript_human')}'")
 
-        if not wav_full.exists():
-            print(f"  [ERROR] Không tìm thấy file {wav_full}!")
-            item["review_status"] = "rejected"
-            item["review_note"] = "File audio không tồn tại"
-            save_label(item)
-            continue
+        ok, err_msg, stats = verify_audio_file(wav_full, expected_sha=item.get("source_sha256"))
 
-        # Inspect WAV quality
-        with wave.open(str(wav_full), "rb") as w:
-            nframes = w.getnframes()
-            pcm = w.readframes(nframes)
-            seconds = nframes / RATE
-        stats = pcm_stats(pcm)
-        print(f"  Thời lượng: {seconds:.2f}s | Peak: {stats['peak']}/32768 | RMS: {stats['rms']} | Clipping: {stats['clipped_percent']}%")
-
-        if auto_accept:
-            item["speaker_confirmed"] = True
-            item["review_status"] = "accepted"
-            item["review_note"] = f"Duyệt tự động bởi {reviewer}"
-            save_label(item)
-            print("  -> Đã đánh dấu: ACCEPTED (speaker_confirmed=True)")
-            continue
-
-        # Interactive options
-        while True:
-            choice = input("  Lệnh [p: phát loa, a: chấp nhận (accept), r: từ chối (reject), n: cần xem lại (needs_review), s: bỏ qua]: ").strip().lower()
-            if choice == "p":
-                print(f"  Đang phát qua loa ({config.playback_device})...")
-                subprocess.run(["aplay", "-q", "-D", config.playback_device, str(wav_full)])
-            elif choice == "a":
-                note = input("  Ghi chú (Enter nếu để trống): ").strip() or "Đủ đầu câu và âm ơi; tín hiệu tốt"
-                item["speaker_confirmed"] = True
-                item["review_status"] = "accepted"
-                item["review_note"] = note
-                save_label(item)
-                print("  -> Đã cập nhật: ACCEPTED")
-                break
-            elif choice == "r":
-                reason = input("  Lý do từ chối (clipping, mất âm, sai người, ...): ").strip() or "Không đạt chất lượng"
+        if not ok:
+            print(f"  [ERROR] Lỗi kiểm tra file audio: {err_msg}")
+            if auto_qc:
                 item["speaker_confirmed"] = False
                 item["review_status"] = "rejected"
+                item["reviewer"] = reviewer
+                item["reviewed_at"] = datetime.now().astimezone().isoformat()
+                item["review_note"] = f"Technical QC failed: {err_msg}"
+                save_label(item)
+                reviewed_sessions.add(item.get("session_id"))
+                print(f"  -> Đã cập nhật: REJECTED ({err_msg})")
+                continue
+        else:
+            print(
+                f"  Thời lượng: {stats['seconds']:.2f}s | Peak: {stats['peak']}/32768 | RMS: {stats['rms']} | Clipping: {stats['clipped_percent']}% | SHA256: OK"
+            )
+
+        if auto_qc:
+            if ok:
+                # Auto QC only sets technical_pass; DOES NOT confirm speaker
+                item["speaker_confirmed"] = False
+                item["review_status"] = "technical_pass"
+                item["reviewer"] = reviewer
+                item["reviewed_at"] = datetime.now().astimezone().isoformat()
+                item["review_note"] = f"Technical QC passed (format & SHA-256 verified) by {reviewer}"
+                save_label(item)
+                reviewed_sessions.add(item.get("session_id"))
+                print("  -> Đã cập nhật: TECHNICAL_PASS (chờ con người nghe và xác nhận người nói để accepted)")
+            continue
+
+        # Interactive manual review
+        while True:
+            choice = input(
+                "  Lệnh [p: phát loa, a: chấp nhận (accept), r: từ chối (reject), n: cần xem lại (needs_review), s: bỏ qua]: "
+            ).strip().lower()
+            if choice == "p":
+                if not wav_full.exists():
+                    print("  [ERROR] File không tồn tại để phát!")
+                else:
+                    print(f"  Đang phát qua loa ({config.playback_device})...")
+                    subprocess.run(["aplay", "-q", "-D", config.playback_device, str(wav_full)])
+            elif choice == "a":
+                if not ok:
+                    print(f"  [BLOCK] KHÔNG THỂ CHẤP NHẬN: file audio không đạt kiểm tra kỹ thuật ({err_msg})!")
+                    print("  Chỉ có thể chọn 'r' (reject) hoặc 'n' (needs_review).")
+                    continue
+                note = input("  Ghi chú xác nhận người nói và nội dung (Enter nếu mặc định): ").strip() or "Đủ đầu câu và âm ơi; xác nhận người nói và tín hiệu tốt"
+                item["speaker_confirmed"] = True
+                item["review_status"] = "accepted"
+                item["reviewer"] = reviewer
+                item["reviewed_at"] = datetime.now().astimezone().isoformat()
+                item["review_note"] = note
+                save_label(item)
+                reviewed_sessions.add(item.get("session_id"))
+                print("  -> Đã cập nhật: ACCEPTED (speaker_confirmed=True)")
+                break
+            elif choice == "r":
+                reason = input("  Lý do từ chối (clipping, mất âm, sai người, sha mismatch...): ").strip() or (err_msg if not ok else "Không đạt chất lượng")
+                item["speaker_confirmed"] = False
+                item["review_status"] = "rejected"
+                item["reviewer"] = reviewer
+                item["reviewed_at"] = datetime.now().astimezone().isoformat()
                 item["review_note"] = reason
                 save_label(item)
+                reviewed_sessions.add(item.get("session_id"))
                 print("  -> Đã cập nhật: REJECTED")
                 break
             elif choice == "n":
                 note = input("  Ghi chú nghi ngờ: ").strip() or "Cần đối chiếu thêm"
                 item["review_status"] = "needs_review"
+                item["reviewer"] = reviewer
+                item["reviewed_at"] = datetime.now().astimezone().isoformat()
                 item["review_note"] = note
                 save_label(item)
+                reviewed_sessions.add(item.get("session_id"))
                 print("  -> Đã cập nhật: NEEDS_REVIEW")
                 break
             elif choice == "s":
                 print("  -> Bỏ qua")
                 break
 
+    # Update session review status in sessions.json
+    update_session_review_status(reviewed_sessions, reviewer)
     print("\n[DONE] Hoàn tất quá trình duyệt!")
 
 
@@ -190,15 +290,25 @@ def main():
     rev = sub.add_parser("review", help="Duyệt từng mẫu trong phiên hoặc thư mục.")
     rev.add_argument("--session-id", default=None, help="Mã phiên (session_id) cần duyệt.")
     rev.add_argument("--dir", default=None, help="Đường dẫn thư mục thu âm.")
-    rev.add_argument("--auto-accept", action="store_true", help="Chấp nhận toàn bộ các mẫu hợp lệ không cần xác nhận từng file.")
+    rev.add_argument(
+        "--auto-qc",
+        "--auto-accept",
+        dest="auto_qc",
+        action="store_true",
+        help="Kiểm tra kỹ thuật tự động (format, readable, SHA-256); đặt technical_pass nhưng KHÔNG tự xác nhận người nói.",
+    )
     rev.add_argument("--reviewer", default="QC", help="Tên người duyệt.")
 
     args = parser.parse_args()
     ensure_child_study_dirs()
 
     if args.command == "review":
-        review_session(target_dir=args.dir, target_session=args.session_id,
-                       auto_accept=args.auto_accept, reviewer=args.reviewer)
+        review_session(
+            target_dir=args.dir,
+            target_session=args.session_id,
+            auto_qc=args.auto_qc,
+            reviewer=args.reviewer,
+        )
     else:
         print_summary()
 

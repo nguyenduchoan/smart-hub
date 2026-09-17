@@ -173,15 +173,53 @@ lệnh riêng khi người nói tương ứng đã sẵn sàng:
 .venv/bin/python scripts/record_wake_samples.py --speaker child
 ```
 
-Sau khoảng 7 giây chuẩn bị, mỗi tiếng tít mở một lượt thu 5 giây: nói
-**“Maika ơi” đúng một lần**, rồi im lặng. Tổng cộng 5 lượt, khoảng 40 giây;
-có thể dùng `--takes 1` để thử một lượt hoặc Ctrl+C để dừng.
+Sau khoảng 3 giây chuẩn bị (ổn định mic ~2.5s và tiếng tít), mỗi tiếng tít mở
+một lượt thu 5 giây: nói **“Maika ơi” đúng một lần**, rồi im lặng. Tổng cộng 5
+lượt, khoảng 35–40 giây; có thể dùng `--takes 1` để thử một lượt hoặc Ctrl+C để
+dừng (trả về exit code 130 và đánh dấu manifest `interrupted` để caller phân biệt
+với hoàn tất bình thường).
 
 WAV mono 16-bit/16 kHz và thông tin từng lượt được lưu riêng trong
 `recordings/<thời-gian>-<adult|child>-<mã>/`, được Git bỏ qua. Công cụ đóng mic
 sau khi thu, không đổi gain hay model. Cần kiểm tra nội dung và xác nhận người
 nói trước khi dùng mẫu đối chiếu. Thu 5 mẫu **không tự huấn luyện lại STT** và
 không thay mẫu của engine `listen`.
+
+## Duyệt và đánh giá dữ liệu giọng bé (Child Study)
+
+Quy trình bảo đảm toàn vẹn dữ liệu: **thu âm → kiểm tra kỹ thuật → duyệt thủ công → đánh giá offline**.
+
+### 1. Kiểm tra kỹ thuật tự động (`--auto-qc`)
+Kiểm tra tính toàn vẹn file WAV, định dạng PCM 16kHz mono 16-bit và khớp SHA-256 với nhãn:
+```bash
+.venv/bin/python scripts/review_child_study.py --auto-qc
+```
+Lệnh này chỉ đánh dấu `technical_pass` và không tự động xác nhận người nói (`speaker_confirmed`).
+
+### 2. Duyệt nhãn thủ công (Interactive Review)
+Người vận hành nghe lại từng file, kiểm tra tạp âm/clipping, xác nhận đúng người nói và phê duyệt:
+```bash
+.venv/bin/python scripts/review_child_study.py
+```
+Sau khi duyệt, mẫu được cập nhật `speaker_confirmed: true`, `review_status: "accepted"`, lưu tên người duyệt và thời điểm duyệt.
+
+### 3. Đánh giá offline chính thức (Official Benchmark)
+Mặc định runner chỉ đánh giá tập `--split dev` và nghiêm ngặt yêu cầu các mẫu đã được duyệt chấp nhận (`review_status == "accepted"`, `speaker_confirmed == true`, đúng SHA-256). Tập `test` được bảo vệ độc lập:
+```bash
+.venv/bin/python scripts/evaluate_child_study.py
+```
+Muốn chạy tập test sau khi đã chốt candidate:
+```bash
+.venv/bin/python scripts/evaluate_child_study.py --split test
+```
+
+### 4. Đánh giá ad-hoc / chưa duyệt
+Để chạy nhanh thử nghiệm trên file đơn hoặc thư mục chưa qua quy trình duyệt nhãn chính thức, bắt buộc truyền cờ `--allow-unreviewed`:
+```bash
+.venv/bin/python scripts/evaluate_child_study.py --allow-unreviewed --dir recordings/TIEU_DE_THU_MUC
+.venv/bin/python scripts/evaluate_child_study.py --allow-unreviewed --wav recordings/path/to/take-01.wav --label positive
+```
+Báo cáo ad-hoc sẽ được gắn watermark cảnh báo rõ ràng và không được dùng làm căn cứ nghiệm thu chính thức.
 
 ## Chế độ mẫu giọng cá nhân (`listen`)
 

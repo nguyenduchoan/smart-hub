@@ -86,8 +86,9 @@ Quy trình này không cần mở port hoặc triển khai dịch vụ.
 ```
 
 1. Người lớn đứng ngoài hướng thu, bé ở vị trí đã chọn.
-2. Chờ khoảng 7 giây chuẩn bị; chỉ bắt đầu sau tiếng tít. Chừa một nhịp ngắn
-   khoảng 0,3–0,5 giây để tránh nói vào phần đuôi tiếng tít bị bỏ.
+2. Chờ khoảng 3 giây chuẩn bị (ổn định mic ~2.5s và tiếng tít); chỉ bắt đầu sau
+   tiếng tít. Chừa một nhịp ngắn khoảng 0,3–0,5 giây để tránh nói vào phần đuôi
+   tiếng tít bị bỏ.
 3. Bé nói **“Maika ơi” đúng một lần**, rồi im lặng tới hết cửa sổ 5 giây.
 4. Ghi lại đường dẫn xuất hiện sau `[OUTPUT]` và kiểm tra `[SAVED]`.
 5. Dừng công cụ xong mới nghe lại WAV, ở âm lượng vừa phải, xác nhận đủ đầu
@@ -109,9 +110,11 @@ Chạy từng lệnh khi đúng người đã sẵn sàng, không chạy đồng
 .venv/bin/python scripts/record_wake_samples.py --speaker adult --takes 5
 ```
 
-Mỗi lệnh khoảng 40 giây, gồm chuẩn bị, 5 cửa sổ thu và khoảng nghỉ ngắn.
-Mỗi tiếng tít ứng với một câu. Nếu bé muốn nghỉ giữa chừng, Ctrl+C; các file
-đã ghi vẫn cần được nghe và đánh dấu riêng. Không tính phiên dở là đủ 5 mẫu.
+Mỗi lệnh khoảng 35–40 giây, gồm ổn định mic (~2.5s), 5 cửa sổ thu và khoảng nghỉ.
+Mỗi tiếng tít ứng với một câu. Nếu bé muốn nghỉ giữa chừng, nhấn Ctrl+C (hoặc gửi
+SIGTERM); tiến trình sẽ lưu manifest với `status: "interrupted"`, bảo toàn các take
+đã ghi và trả exit code 130 để caller phân biệt với hoàn tất bình thường. Không tính
+phiên dở là đủ 5 mẫu.
 
 Kết quả hiện có:
 
@@ -373,19 +376,49 @@ Có thể chia 10 câu thành hai đợt 5 trong cùng phiên, hoặc hai phiên
 giảm ảnh hưởng bé quen bài/mệt. Ghi kết quả từng lượt; **10 event tổng không
 đảm bảo 10 lần đều đúng** nếu có lượt bỏ sót và lượt nhận hai lần.
 
-### 8.4. So sánh chính xác trên cùng WAV — cần bổ sung công cụ
+### 8.4. So sánh chính xác trên cùng WAV — runner và quy trình duyệt
 
-Đầu việc CV-05 cần tạo runner đọc nhãn đã duyệt, phát từng frame WAV qua
-`LocalSTT(wake_profile=...)` và bộ khớp từ, chạy cả hai profile trên cùng tập
-dev. Runner phải dùng quy tắc kiểm tra audio/clipping và reset tương ứng
-runtime, ghi rõ việc flush cuối WAV; không gọi thẳng STT trên câu đã cắt để
-thay cho đánh giá cả VAD + STT + wake. Mỗi WAV độc lập có trạng thái mới;
-thêm bài audio liên tục để kiểm tra cooldown và nghe lại sau nghỉ.
+Runner đánh giá offline (`scripts/evaluate_child_study.py`) và công cụ duyệt
+nhãn (`scripts/review_child_study.py`) hiện thực hóa đầu việc CV-05. Pipeline
+hoạt động theo nguyên tắc **thu âm → kiểm tra kỹ thuật → duyệt thủ công → đánh giá**:
 
-Kết quả tối thiểu: `sample_id`, SHA-256, split, phiên bản code/model/cấu hình,
-profile, transcript, số event mong đợi/thực tế, clipping, lỗi xử lý và thời
-gian xử lý. WAV hỏng/runner lỗi là `ERROR`, không được tính là âm tính đúng.
-Không coi thời gian giải mã offline là độ trễ phản hồi mic/loa.
+1. **Thu âm**: `scripts/record_wake_samples.py` tính SHA-256 toàn bộ byte của
+   từng file WAV, ghi metadata vào manifest phiên và đồng bộ nhãn với trạng thái
+   ban đầu `captured_pending_review`, `speaker_confirmed: false`.
+2. **Kiểm tra kỹ thuật tự động**: `scripts/review_child_study.py --auto-qc`
+   kiểm tra tính toàn vẹn file WAV, định dạng (16 kHz, mono, 16-bit PCM) và
+   khớp checksum SHA-256. Lệnh này chỉ đánh dấu `technical_pass`, **không** tự
+   động xác nhận danh tính người nói.
+3. **Duyệt thủ công (Interactive Review)**: Người vận hành nghe lại từng file qua
+   `scripts/review_child_study.py`, kiểm tra tạp âm/clipping, xác nhận đúng người
+   nói (`speaker_confirmed: true`), ghi nhận reviewer và thời điểm, và chuyển
+   trạng thái sang `review_status: "accepted"`.
+4. **Tiêu chí nghiệm thu chính thức (Official Acceptance Criteria)**:
+   Runner chỉ chấp nhận mẫu thỏa mãn cả 3 điều kiện:
+   - `review_status == "accepted"`
+   - `speaker_confirmed is True`
+   - File WAV trên đĩa khớp hoàn toàn SHA-256 với `source_sha256` trong nhãn.
+   Mẫu vi phạm checksum hoặc chưa duyệt sẽ bị chặn/loại khỏi benchmark chính thức.
+5. **Mặc định tập Dev — Bảo vệ tập Test**:
+   `scripts/evaluate_child_study.py` mặc định chạy `--split dev`. Tập `test`
+   giữ riêng và chỉ được kích hoạt tường minh bằng `--split test` sau khi đã chốt
+   ứng viên cuối cùng, chống rò rỉ dữ liệu hoặc tinh chỉnh theo tập test.
+6. **Chế độ Ad-hoc (`--allow-unreviewed`)**:
+   Khi chạy đánh giá thử nghiệm nhanh trên file lẻ (`--wav`) hoặc thư mục chưa
+   duyệt (`--dir`), bắt buộc phải truyền cờ `--allow-unreviewed`. Kết quả ad-hoc
+   được đóng dấu cảnh báo không chính thức và không được dùng làm căn cứ nghiệm thu.
+7. **Quy tắc mẫu số và xử lý lỗi (Denominator Accounting)**:
+   Mọi chỉ số chính thức dùng mẫu số là **tổng mẫu hợp lệ (eligible samples)**.
+   Nếu mẫu bị lỗi file, lỗi runner hoặc clipping, trạng thái là `ERROR` hoặc
+   `CLIPPED` và được tính vào mẫu số (ví dụ: 9/10 mẫu đúng; 1 ERROR), không được
+   bỏ qua để biến thành 9/9 đúng (tránh thổi phồng tỷ lệ chính xác).
+8. **Thời gian giải mã (Decode RTF)**:
+   Chỉ số RTF đo trong benchmark là **decode RTF** (`decode_seconds / decoded_audio_seconds`
+   trên các đoạn VAD chuyển qua STT), phản ánh thông lượng mô hình Zipformer.
+   Benchmark đồng thời ghi nhận wall-clock RTF của toàn bộ file để chẩn đoán.
+   Cả hai chỉ số này **không phải độ trễ phản hồi mic/loa trực tiếp** trong môi
+   trường live.
+
 
 ### 8.5. Quy tắc chọn ứng viên
 
@@ -450,14 +483,19 @@ Nếu một lượt có 2 event, ghi lỗi trùng; không tính nó là lượt 
 
 Các chỉ số:
 
-- **Nhận đúng một lần** = số lượt dương có đúng 1 event / tổng lượt dương hợp lệ.
-- **Bỏ sót (FRR)** = số lượt dương có 0 event / tổng lượt dương hợp lệ.
+- **Nhận đúng một lần** = số lượt dương có đúng 1 event / tổng lượt dương hợp lệ (eligible).
+- **Bỏ sót (FRR)** = số lượt dương có 0 event / tổng lượt dương hợp lệ (eligible).
 - **Lượt trùng** = số lượt dương có trên 1 event; báo cả số event thừa.
-- **Báo nhầm trên câu âm** = số câu âm có ít nhất 1 event / tổng câu âm.
+- **Báo nhầm trên câu âm** = số câu âm có ít nhất 1 event / tổng câu âm hợp lệ (eligible).
+- **Mẫu số hợp lệ và xử lý lỗi (ERROR / CLIPPED)** = mọi mẫu bị lỗi giải mã (`ERROR`) hoặc clipping (`CLIPPED`)
+  được tính vào mẫu số hợp lệ và làm giảm tỷ lệ nhận đúng (ví dụ: 9 mẫu đúng trên 10 mẫu hợp lệ với 1 ERROR
+  là 90%, không được loại bỏ mẫu lỗi để tính thành 9/9 = 100%).
 - **Báo nhầm theo giờ** = tổng event sai / số giờ nền thực sự quan sát.
+- **Thời gian giải mã (Decode RTF)** = `decode_seconds / decoded_audio_seconds` trên các đoạn VAD đưa vào
+  STT Zipformer (chỉ số thông lượng mô hình offline, không phải độ trễ tương tác thực tế).
 - **Độ trễ live** = lúc bắt đầu nghe tiếng đáp trừ lúc kết thúc câu gọi;
   báo cách đo, số lượt, trung vị và lượt chậm nhất. Đo tay chỉ là ước lượng;
-  benchmark decode không đo được chỉ số này. Nếu cần đo chính xác hơn bằng
+  benchmark decode offline không đo được chỉ số này. Nếu cần đo chính xác hơn bằng
   bản ghi có cả mic/loa, đó là dữ liệu bổ sung cần thống nhất trước khi thu.
 
 Không ghi “0 báo nhầm/giờ đã được chứng minh” chỉ từ 30 phút: báo đúng

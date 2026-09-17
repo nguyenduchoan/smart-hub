@@ -2,12 +2,20 @@
 from datetime import datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import subprocess
 import time
 import wave
 
-from .audio import RATE, pcm_stats, wav_frames
+from .audio import (
+    RATE,
+    pcm_stats,
+    wav_frames,
+    is_pcm_frame_clipped,
+    is_segment_clipped,
+)
 from .config import ROOT, load_config
 from .stt_keyword import KeywordTrigger
 
@@ -17,6 +25,17 @@ LABELS_FILE = CHILD_STUDY_DIR / "labels.jsonl"
 RESULTS_DIR = CHILD_STUDY_DIR / "results"
 DERIVED_DIR = CHILD_STUDY_DIR / "derived"
 DECISIONS_FILE = CHILD_STUDY_DIR / "decisions.md"
+
+VALID_SPLITS = ("pilot", "dev", "test")
+VALID_LABELS = ("positive", "negative")
+VALID_SPEAKER_LABELS = ("child", "adult")
+VALID_REVIEW_STATUSES = (
+    "captured_pending_review",
+    "technical_pass",
+    "accepted",
+    "rejected",
+    "needs_review",
+)
 
 NEGATIVE_PRESETS = {
     1: "Maika",
@@ -30,6 +49,11 @@ NEGATIVE_PRESETS = {
     9: "Tắt quạt",
     10: "Em nghe",
 }
+
+
+class ChildStudyDataError(Exception):
+    """Raised when child-study data is corrupted, collided, or invalid."""
+    pass
 
 
 def ensure_child_study_dirs(base_dir=None):
@@ -52,6 +76,10 @@ def ensure_child_study_dirs(base_dir=None):
 
 
 def compute_file_sha256(path):
+    """Compute SHA-256 of the entire file bytes."""
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"File not found: {path}")
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while chunk := f.read(65536):
@@ -59,24 +87,146 @@ def compute_file_sha256(path):
     return h.hexdigest()
 
 
+def validate_label_entry(entry):
+    """Strictly validate schema and contract for a label entry."""
+    if not isinstance(entry, dict):
+        raise ChildStudyDataError(f"Label entry must be a dict, got {type(entry)}")
+
+    sample_id = entry.get("sample_id")
+    if not sample_id or not str(sample_id).strip():
+        raise ChildStudyDataError("sample_id must be a non-empty string")
+
+    source = entry.get("source")
+    if not source or not str(source).strip():
+        raise ChildStudyDataError("source must be a non-empty string")
+
+    speaker_id = entry.get("speaker_id")
+    if not speaker_id or not str(speaker_id).strip():
+        raise ChildStudyDataError("speaker_id must be a non-empty string")
+
+    session_id = entry.get("session_id")
+    if not session_id or not str(session_id).strip():
+        raise ChildStudyDataError("session_id must be a non-empty string")
+
+    label = entry.get("label")
+    if label not in VALID_LABELS:
+        raise ChildStudyDataError(f"Invalid label '{label}'; must be one of {VALID_LABELS}")
+
+    expected_events = entry.get("expected_events")
+    if expected_events is None or not isinstance(expected_events, int) or expected_events < 0:
+        raise ChildStudyDataError(f"expected_events must be an integer >= 0, got {expected_events}")
+
+    if label == "positive" and expected_events != 1:
+        raise ChildStudyDataError(
+            f"Contract violation: positive label requires expected_events=1, got {expected_events}"
+        )
+    if label == "negative" and expected_events != 0:
+        raise ChildStudyDataError(
+            f"Contract violation: negative label requires expected_events=0, got {expected_events}"
+        )
+
+    distance_m = entry.get("distance_m", 1.0)
+    try:
+        dist = float(distance_m)
+        if not math.isfinite(dist) or dist <= 0:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise ChildStudyDataError(f"Invalid distance_m: {distance_m}; must be a finite positive float")
+
+    split = entry.get("split")
+    if split not in VALID_SPLITS and split != "manual":
+        raise ChildStudyDataError(f"Invalid split '{split}'; must be one of {VALID_SPLITS}")
+
+    speaker_label = entry.get("speaker_label")
+    if speaker_label is not None and speaker_label not in VALID_SPEAKER_LABELS:
+        raise ChildStudyDataError(
+            f"Invalid speaker_label '{speaker_label}'; must be one of {VALID_SPEAKER_LABELS}"
+        )
+
+    review_status = entry.get("review_status")
+    if review_status is not None and review_status not in VALID_REVIEW_STATUSES and review_status != "manual":
+        raise ChildStudyDataError(f"Invalid review_status '{review_status}'")
+
+
+def create_label_entry(
+    sample_id,
+    source,
+    source_sha256,
+    speaker_id,
+    session_id,
+    split="pilot",
+    label="positive",
+    transcript_human="Maika ơi",
+    expected_events=None,
+    distance_m=1.0,
+    condition="quiet_normal_voice",
+    speaker_confirmed=False,
+    review_status="captured_pending_review",
+    review_note="",
+    speaker_label=None,
+):
+    if expected_events is None:
+        expected_events = 1 if label == "positive" else 0
+
+    if speaker_label is None:
+        spk_str = str(speaker_id).lower()
+        if spk_str.startswith("child"):
+            speaker_label = "child"
+        elif spk_str.startswith("adult"):
+            speaker_label = "adult"
+        else:
+            speaker_label = "child"
+
+    entry = {
+        "sample_id": str(sample_id).strip(),
+        "source": str(source).strip(),
+        "source_sha256": str(source_sha256).strip() if source_sha256 else "",
+        "speaker_id": str(speaker_id).strip(),
+        "speaker_label": speaker_label,
+        "speaker_confirmed": bool(speaker_confirmed),
+        "session_id": str(session_id).strip(),
+        "split": split,
+        "label": label,
+        "transcript_human": transcript_human or "",
+        "expected_events": int(expected_events),
+        "distance_m": float(distance_m),
+        "condition": condition,
+        "review_status": review_status,
+        "review_note": review_note,
+    }
+    validate_label_entry(entry)
+    return entry
+
+
 def load_sessions(sessions_file=None):
+    """Load sessions from JSON with fail-fast corruption detection."""
     path = Path(sessions_file) if sessions_file else SESSIONS_FILE
     if not path.exists():
         return []
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+        content = path.read_text(encoding="utf-8")
+        data = json.loads(content)
+    except Exception as exc:
+        raise ChildStudyDataError(f"Malformed sessions JSON file '{path}': {exc}") from exc
+    if not isinstance(data, list):
+        raise ChildStudyDataError(f"Malformed sessions JSON file '{path}': expected list, got {type(data)}")
+    return data
 
 
-def save_session(session_info, sessions_file=None):
+def save_session(session_info, sessions_file=None, allow_update=True):
+    """Save a session entry atomically; detect collision if allow_update is False."""
     path = Path(sessions_file) if sessions_file else SESSIONS_FILE
     ensure_child_study_dirs(path.parent)
-    sessions = load_sessions(path)
+    sessions = load_sessions(path)  # fail-fast on corruption
     session_id = session_info.get("session_id")
+    if not session_id:
+        raise ChildStudyDataError("session_info must have a 'session_id'")
+
     updated = False
     for idx, s in enumerate(sessions):
         if s.get("session_id") == session_id:
+            if not allow_update:
+                raise ChildStudyDataError(f"Session ID collision: session '{session_id}' already exists")
             sessions[idx] = session_info
             updated = True
             break
@@ -93,34 +243,58 @@ def save_session(session_info, sessions_file=None):
 
 
 def load_labels(labels_file=None):
+    """Load labels from JSONL with fail-fast line number error reporting."""
     path = Path(labels_file) if labels_file else LABELS_FILE
     if not path.exists():
         return []
     labels = []
     with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    labels.append(json.loads(line))
-                except Exception:
-                    continue
+        for line_num, line in enumerate(f, start=1):
+            line_str = line.strip()
+            if not line_str:
+                continue
+            try:
+                item = json.loads(line_str)
+            except Exception as exc:
+                raise ChildStudyDataError(
+                    f"Malformed label JSON at line {line_num} in '{path}': {exc}"
+                ) from exc
+            labels.append(item)
     return labels
 
 
 def save_label(entry, labels_file=None):
+    """Save a single label entry atomically; detect identity conflicts."""
+    validate_label_entry(entry)
     path = Path(labels_file) if labels_file else LABELS_FILE
     ensure_child_study_dirs(path.parent)
-    labels = load_labels(path)
+    labels = load_labels(path)  # fail-fast on corruption
+
     sample_id = entry.get("sample_id")
     source = entry.get("source")
-    updated = False
+
+    matched_idx = None
     for idx, item in enumerate(labels):
-        if (sample_id and item.get("sample_id") == sample_id) or (source and item.get("source") == source):
-            labels[idx] = entry
-            updated = True
+        item_sid = item.get("sample_id")
+        item_src = item.get("source")
+
+        if item_sid == sample_id and item_src != source:
+            raise ChildStudyDataError(
+                f"Identity collision: sample_id '{sample_id}' exists with different source: "
+                f"'{item_src}' vs '{source}'"
+            )
+        if item_src == source and item_sid != sample_id:
+            raise ChildStudyDataError(
+                f"Identity collision: source '{source}' exists with different sample_id: "
+                f"'{item_sid}' vs '{sample_id}'"
+            )
+        if item_sid == sample_id and item_src == source:
+            matched_idx = idx
             break
-    if not updated:
+
+    if matched_idx is not None:
+        labels[matched_idx] = entry
+    else:
         labels.append(entry)
 
     old_umask = os.umask(0o077)
@@ -134,41 +308,216 @@ def save_label(entry, labels_file=None):
         os.umask(old_umask)
 
 
-def create_label_entry(sample_id, source, source_sha256, speaker_id, session_id,
-                       split="pilot", label="positive", transcript_human="Maika ơi",
-                       expected_events=1, distance_m=1.0, condition="quiet_normal_voice",
-                       speaker_confirmed=False, review_status="captured_pending_review",
-                       review_note=""):
-    return {
-        "sample_id": sample_id,
-        "source": str(source),
-        "source_sha256": source_sha256,
-        "speaker_id": speaker_id,
-        "speaker_confirmed": bool(speaker_confirmed),
-        "session_id": session_id,
-        "split": split,
-        "label": label,
-        "transcript_human": transcript_human,
-        "expected_events": expected_events,
-        "distance_m": float(distance_m),
-        "condition": condition,
-        "review_status": review_status,
-        "review_note": review_note,
-    }
+def save_session_and_labels(
+    session_info,
+    label_entries,
+    sessions_file=None,
+    labels_file=None,
+    allow_session_update=True,
+):
+    """Batch-save session and labels with atomic pre-validation and collision checks."""
+    session_id = session_info.get("session_id")
+    if not session_id:
+        raise ChildStudyDataError("session_info must have a 'session_id'")
+
+    for entry in label_entries:
+        validate_label_entry(entry)
+
+    # Check internal consistency within label_entries batch
+    seen_sids = {}
+    seen_srcs = {}
+    for entry in label_entries:
+        sid = entry["sample_id"]
+        src = entry["source"]
+        if sid in seen_sids and seen_sids[sid] != src:
+            raise ChildStudyDataError(
+                f"Batch collision: sample_id '{sid}' has multiple sources in batch"
+            )
+        if src in seen_srcs and seen_srcs[src] != sid:
+            raise ChildStudyDataError(
+                f"Batch collision: source '{src}' has multiple sample_ids in batch"
+            )
+        seen_sids[sid] = src
+        seen_srcs[src] = sid
+
+    sess_path = Path(sessions_file) if sessions_file else SESSIONS_FILE
+    lbl_path = Path(labels_file) if labels_file else LABELS_FILE
+    ensure_child_study_dirs(sess_path.parent)
+
+    sessions = load_sessions(sess_path)
+    if not allow_session_update:
+        for s in sessions:
+            if s.get("session_id") == session_id:
+                raise ChildStudyDataError(
+                    f"Session ID collision: session '{session_id}' already exists"
+                )
+
+    existing_labels = load_labels(lbl_path)
+    # Check conflicts against existing labels
+    for entry in label_entries:
+        sid = entry["sample_id"]
+        src = entry["source"]
+        for item in existing_labels:
+            item_sid = item.get("sample_id")
+            item_src = item.get("source")
+            if item_sid == sid and item_src != src:
+                raise ChildStudyDataError(
+                    f"Identity collision: sample_id '{sid}' exists with different source: "
+                    f"'{item_src}' vs '{src}'"
+                )
+            if item_src == src and item_sid != sid:
+                raise ChildStudyDataError(
+                    f"Identity collision: source '{src}' exists with different sample_id: "
+                    f"'{item_sid}' vs '{sid}'"
+                )
+
+    # Now perform updates
+    sess_updated = False
+    for idx, s in enumerate(sessions):
+        if s.get("session_id") == session_id:
+            sessions[idx] = session_info
+            sess_updated = True
+            break
+    if not sess_updated:
+        sessions.append(session_info)
+
+    label_map = {(item["sample_id"], item["source"]): idx for idx, item in enumerate(existing_labels)}
+    for entry in label_entries:
+        key = (entry["sample_id"], entry["source"])
+        if key in label_map:
+            existing_labels[label_map[key]] = entry
+        else:
+            label_map[key] = len(existing_labels)
+            existing_labels.append(entry)
+
+    old_umask = os.umask(0o077)
+    try:
+        tmp_sess = sess_path.with_suffix(".tmp")
+        tmp_sess.write_text(json.dumps(sessions, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        tmp_lbl = lbl_path.with_suffix(".tmp")
+        with tmp_lbl.open("w", encoding="utf-8") as f:
+            for item in existing_labels:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+        tmp_sess.replace(sess_path)
+        tmp_lbl.replace(lbl_path)
+    finally:
+        os.umask(old_umask)
 
 
-def evaluate_wav(wav_path, profile="standard", aliases=(), wake_word="Maika ơi",
-                 cooldown_seconds=2.0, backend=None):
-    """Run full VAD + STT + KeywordTrigger on a single WAV file offline."""
-    import numpy as np
-    from .local_stt import LocalSTT
+def is_sample_eligible_for_official_benchmark(item, root=ROOT):
+    """Check if a sample meets all criteria for official benchmark.
+    Returns (is_eligible, reason).
+    """
+    if item.get("review_status") != "accepted":
+        return False, f"review_status is '{item.get('review_status')}', not 'accepted'"
+    if item.get("speaker_confirmed") is not True:
+        return False, "speaker_confirmed is not True"
+    source = item.get("source")
+    if not source:
+        return False, "source is missing"
+    expected_sha = item.get("source_sha256")
+    if not expected_sha:
+        return False, "source_sha256 is missing"
+    label = item.get("label")
+    if label not in VALID_LABELS:
+        return False, f"invalid label '{label}'"
+    expected_events = item.get("expected_events")
+    if label == "positive" and expected_events != 1:
+        return False, f"positive label requires expected_events=1, got {expected_events}"
+    if label == "negative" and expected_events != 0:
+        return False, f"negative label requires expected_events=0, got {expected_events}"
+    split = item.get("split")
+    if split not in VALID_SPLITS:
+        return False, f"invalid split '{split}'"
 
+    wav_path = Path(source)
+    if not wav_path.is_absolute():
+        wav_path = Path(root) / wav_path
+    if not wav_path.is_file():
+        return False, f"WAV file not found: {wav_path}"
+
+    try:
+        actual_sha = compute_file_sha256(wav_path)
+        if actual_sha.lower() != str(expected_sha).lower():
+            return False, f"SHA-256 mismatch: expected {expected_sha}, got {actual_sha}"
+    except Exception as exc:
+        return False, f"Error reading audio file: {exc}"
+
+    return True, "OK"
+
+
+def filter_samples(
+    all_samples,
+    split="dev",
+    session_id=None,
+    speaker=None,
+    label=None,
+    allow_unreviewed=False,
+    root=ROOT,
+):
+    """Filter samples based on selection criteria and review status.
+    Returns (eligible_samples, ineligible_tuples).
+    """
+    eligible = []
+    ineligible = []
+
+    for item in all_samples:
+        item_split = item.get("split")
+        if split != "all" and item_split != split:
+            continue
+        if session_id and item.get("session_id") != session_id:
+            continue
+
+        if speaker:
+            spk_label = item.get("speaker_label")
+            if not spk_label:
+                spk_id = str(item.get("speaker_id", "")).lower()
+                if spk_id.startswith("child"):
+                    spk_label = "child"
+                elif spk_id.startswith("adult"):
+                    spk_label = "adult"
+                else:
+                    spk_label = "unknown"
+            if spk_label != speaker:
+                continue
+
+        if label and item.get("label") != label:
+            continue
+
+        if allow_unreviewed:
+            eligible.append(item)
+        else:
+            ok, reason = is_sample_eligible_for_official_benchmark(item, root=root)
+            if ok:
+                eligible.append(item)
+            else:
+                ineligible.append((item, reason))
+
+    return eligible, ineligible
+
+
+def evaluate_wav(
+    wav_path,
+    profile="standard",
+    aliases=(),
+    wake_word="Maika ơi",
+    cooldown_seconds=2.0,
+    backend=None,
+    expected_sha256=None,
+):
+    """Run full VAD + STT + KeywordTrigger on a single WAV file offline.
+    Follows runtime clipping and RTF semantics from STTSession.
+    """
     path = Path(wav_path)
-    if not path.is_absolute():
-        path = ROOT / path
-
     if not path.is_file():
         raise FileNotFoundError(f"Không tìm thấy file WAV: {path}")
+
+    # File SHA-256 verification before touching models
+    file_sha256 = compute_file_sha256(path)
+    if expected_sha256 and file_sha256.lower() != str(expected_sha256).lower():
+        raise ValueError(f"SHA-256 mismatch: expected {expected_sha256}, got {file_sha256}")
 
     # Read WAV metadata and verify contract
     with wave.open(str(path), "rb") as w:
@@ -177,10 +526,10 @@ def evaluate_wav(wav_path, profile="standard", aliases=(), wake_word="Maika ơi"
             raise ValueError(f"WAV không đúng chuẩn 16kHz mono 16-bit PCM: {path}")
         raw_pcm = w.readframes(nframes)
 
-    sha256 = hashlib.sha256(raw_pcm).hexdigest()
     stats = pcm_stats(raw_pcm)
 
     if backend is None:
+        from .local_stt import LocalSTT
         backend = LocalSTT(wake_profile=profile)
     else:
         backend.reset()
@@ -189,22 +538,26 @@ def evaluate_wav(wav_path, profile="standard", aliases=(), wake_word="Maika ơi"
     transcripts = []
     segments_count = 0
     clipped_frames = 0
+    clipped_segments = 0
     decode_seconds = 0.0
+    decoded_audio_seconds = 0.0
     max_decode = 0.0
     samples_seen = 0
 
     trigger = KeywordTrigger(wake_word, events.append, aliases, cooldown_seconds)
 
     def handle_segments(segments):
-        nonlocal segments_count, decode_seconds, max_decode
+        nonlocal segments_count, clipped_segments, decode_seconds, decoded_audio_seconds, max_decode
         for s in segments:
             segments_count += 1
-            if float(np.mean(np.abs(s) >= 32767 / 32768)) > 0.01:
+            if is_segment_clipped(s):
+                clipped_segments += 1
                 continue
             t0 = time.monotonic()
             text = backend.transcribe(s)
             elapsed = time.monotonic() - t0
             decode_seconds += elapsed
+            decoded_audio_seconds += len(s) / RATE
             max_decode = max(max_decode, elapsed)
             transcripts.append(text)
             if trigger.accept(text, segments_count, samples_seen / RATE):
@@ -212,8 +565,7 @@ def evaluate_wav(wav_path, profile="standard", aliases=(), wake_word="Maika ơi"
 
     for frame in wav_frames(path):
         samples_seen += len(frame) // 2
-        samples = np.frombuffer(frame, dtype="<i2").astype(np.int32)
-        if float(np.mean(np.abs(samples) >= 32767)) > 0.01:
+        if is_pcm_frame_clipped(frame):
             clipped_frames += 1
             backend.reset()
             continue
@@ -222,57 +574,116 @@ def evaluate_wav(wav_path, profile="standard", aliases=(), wake_word="Maika ơi"
     # EOF flush
     handle_segments(backend.flush())
 
-    audio_seconds = len(raw_pcm) / (RATE * 2)
-    rtf = decode_seconds / audio_seconds if audio_seconds > 0 else 0.0
+    file_audio_seconds = len(raw_pcm) / (RATE * 2)
+    decode_rtf = (decode_seconds / decoded_audio_seconds) if decoded_audio_seconds > 0 else 0.0
+    wall_decode_per_file_audio = (decode_seconds / file_audio_seconds) if file_audio_seconds > 0 else 0.0
+    clipped_total = clipped_frames + clipped_segments
 
     return {
         "file": str(wav_path),
-        "sha256": sha256,
+        "sha256": file_sha256,
+        "expected_sha256": expected_sha256,
         "profile": profile,
         "events": len(events),
         "transcripts": transcripts,
         "segments": segments_count,
         "clipped_frames": clipped_frames,
+        "clipped_segments": clipped_segments,
+        "clipped_total": clipped_total,
         "peak": stats["peak"],
         "rms": stats["rms"],
         "clipped_percent": stats["clipped_percent"],
-        "audio_seconds": audio_seconds,
+        "file_audio_seconds": file_audio_seconds,
+        "decoded_audio_seconds": decoded_audio_seconds,
         "decode_seconds": decode_seconds,
         "max_decode_seconds": max_decode,
-        "rtf": rtf,
+        "decode_rtf": decode_rtf,
+        "wall_decode_per_file_audio": wall_decode_per_file_audio,
     }
 
 
-def evaluate_sample(sample, profiles=("standard", "sensitive"), aliases=(),
-                    wake_word="Maika ơi", cooldown_seconds=2.0, preloaded_backends=None):
+def evaluate_sample(
+    sample,
+    profiles=("standard", "sensitive"),
+    aliases=(),
+    wake_word="Maika ơi",
+    cooldown_seconds=2.0,
+    preloaded_backends=None,
+    root=ROOT,
+):
     """Evaluate a labeled sample dictionary on multiple profiles."""
     source = sample.get("source")
     expected_events = sample.get("expected_events", 1 if sample.get("label") == "positive" else 0)
     label = sample.get("label", "positive" if expected_events > 0 else "negative")
+    expected_sha = sample.get("source_sha256")
+
+    wav_path = Path(source) if Path(source).is_absolute() else (Path(root) / source)
+
+    integrity_error = None
+    actual_sha = None
+    if not wav_path.is_file():
+        integrity_error = f"File not found: {wav_path}"
+    elif expected_sha:
+        try:
+            actual_sha = compute_file_sha256(wav_path)
+            if actual_sha.lower() != str(expected_sha).lower():
+                integrity_error = f"SHA-256 mismatch: expected {expected_sha}, got {actual_sha}"
+        except Exception as exc:
+            integrity_error = f"Error reading audio file: {exc}"
 
     evaluations = {}
     for prof in profiles:
+        if integrity_error:
+            # Backend MUST NOT be called on integrity error
+            evaluations[prof] = {
+                "file": str(source),
+                "profile": prof,
+                "events": 0,
+                "transcripts": [],
+                "status": "ERROR",
+                "error": integrity_error,
+                "expected_sha256": expected_sha,
+                "actual_sha256": actual_sha,
+                "is_success": False,
+                "expected_events": expected_events,
+            }
+            continue
+
         backend = preloaded_backends.get(prof) if preloaded_backends else None
         try:
-            res = evaluate_wav(source, profile=prof, aliases=aliases, wake_word=wake_word,
-                               cooldown_seconds=cooldown_seconds, backend=backend)
+            res = evaluate_wav(
+                wav_path,
+                profile=prof,
+                aliases=aliases,
+                wake_word=wake_word,
+                cooldown_seconds=cooldown_seconds,
+                backend=backend,
+                expected_sha256=expected_sha,
+            )
             events = res["events"]
-            if label == "positive":
+            clipped_total = res.get("clipped_total", 0)
+
+            if clipped_total > 0:
+                status = "CLIPPED"
+                is_success = False
+            elif label == "positive":
                 if events == 1:
                     status = "ACCURATE"
                 elif events == 0:
                     status = "MISSED"
                 else:
                     status = "DUPLICATE"
+                is_success = (status == "ACCURATE")
             else:
                 if events == 0:
                     status = "CORRECT_REJECT"
                 else:
                     status = "FALSE_ALARM"
+                is_success = (status == "CORRECT_REJECT")
 
             res["status"] = status
             res["expected_events"] = expected_events
-            res["is_success"] = (status in ("ACCURATE", "CORRECT_REJECT"))
+            res["is_success"] = is_success
             evaluations[prof] = res
         except Exception as exc:
             evaluations[prof] = {
@@ -286,11 +697,17 @@ def evaluate_sample(sample, profiles=("standard", "sensitive"), aliases=(),
                 "expected_events": expected_events,
             }
 
+    speaker_label = sample.get("speaker_label")
+    if not speaker_label:
+        spk_id = str(sample.get("speaker_id", "")).lower()
+        speaker_label = "child" if spk_id.startswith("child") else ("adult" if spk_id.startswith("adult") else "unknown")
+
     return {
         "sample_id": sample.get("sample_id"),
         "source": source,
-        "source_sha256": sample.get("source_sha256"),
+        "source_sha256": expected_sha,
         "speaker_id": sample.get("speaker_id"),
+        "speaker_label": speaker_label,
         "session_id": sample.get("session_id"),
         "split": sample.get("split", "pilot"),
         "label": label,
@@ -303,44 +720,104 @@ def evaluate_sample(sample, profiles=("standard", "sensitive"), aliases=(),
     }
 
 
-def evaluate_dataset(samples, profiles=("standard", "sensitive"), aliases=(),
-                     wake_word="Maika ơi"):
-    """Evaluate a collection of labeled samples and produce aggregated metrics."""
-    from .local_stt import LocalSTT
+def get_reproducibility_metadata(profiles, wake_word, aliases, cooldown_seconds, split, evaluation_mode):
+    git_commit = "unknown"
+    git_dirty = "unknown"
+    try:
+        res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=str(ROOT))
+        if res.returncode == 0:
+            git_commit = res.stdout.strip()
+        status_res = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, cwd=str(ROOT))
+        if status_res.returncode == 0:
+            git_dirty = bool(status_res.stdout.strip())
+    except Exception:
+        pass
 
-    # Preload backends once to avoid re-loading on each WAV
+    profile_configs = {}
+    try:
+        from .local_stt import WAKE_PROFILES
+        profile_configs = {p: WAKE_PROFILES.get(p, {}) for p in profiles}
+    except Exception:
+        pass
+
+    model_hashes = {}
+    try:
+        from .stt_assets import HASHES
+        model_hashes = dict(HASHES)
+    except Exception:
+        pass
+
+    return {
+        "git_commit": git_commit,
+        "git_dirty": git_dirty,
+        "wake_word": wake_word,
+        "aliases": list(aliases),
+        "cooldown_seconds": cooldown_seconds,
+        "evaluated_profiles": list(profiles),
+        "wake_profiles_config": profile_configs,
+        "stt_model_bundle": "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20 (Vietnamese fine-tuned)",
+        "model_file_hashes": model_hashes,
+        "split": split,
+        "evaluation_mode": evaluation_mode,
+        "timestamp": datetime.now().astimezone().isoformat(),
+    }
+
+
+def evaluate_dataset(
+    samples,
+    profiles=("standard", "sensitive"),
+    aliases=(),
+    wake_word="Maika ơi",
+    cooldown_seconds=2.0,
+    split="dev",
+    evaluation_mode="official",
+    root=ROOT,
+):
+    """Evaluate a collection of samples and calculate complete denominator-correct metrics."""
     backends = {}
     for prof in profiles:
         try:
+            from .local_stt import LocalSTT
             backends[prof] = LocalSTT(wake_profile=prof)
         except Exception:
             pass
 
     evaluated_samples = []
     for s in samples:
-        evaluated_samples.append(evaluate_sample(
-            s, profiles=profiles, aliases=aliases, wake_word=wake_word,
-            preloaded_backends=backends
-        ))
+        evaluated_samples.append(
+            evaluate_sample(
+                s,
+                profiles=profiles,
+                aliases=aliases,
+                wake_word=wake_word,
+                cooldown_seconds=cooldown_seconds,
+                preloaded_backends=backends,
+                root=root,
+            )
+        )
 
-    # Aggregated metrics per profile
     metrics = {}
     for prof in profiles:
-        pos_total = 0
+        pos_eligible = 0
+        pos_processed = 0
+        pos_errors = 0
         pos_accurate = 0
         pos_missed = 0
         pos_duplicate = 0
+        pos_clipped = 0
 
-        neg_total = 0
+        neg_eligible = 0
+        neg_processed = 0
+        neg_errors = 0
         neg_correct_reject = 0
         neg_false_alarm = 0
+        neg_clipped = 0
 
-        errors = 0
         total_decode = 0.0
-        total_audio = 0.0
+        total_decoded_audio = 0.0
+        total_file_audio = 0.0
         max_decode = 0.0
 
-        # Subgroup stats: (speaker, condition, split)
         groups = {}
 
         for item in evaluated_samples:
@@ -349,186 +826,321 @@ def evaluate_dataset(samples, profiles=("standard", "sensitive"), aliases=(),
             status = res.get("status")
 
             speaker = item.get("speaker_id", "unknown")
+            speaker_label = item.get("speaker_label", "unknown")
             condition = item.get("condition", "unknown")
-            split = item.get("split", "unknown")
-            group_key = f"{speaker} | {condition} | {split}"
+            item_split = item.get("split", "unknown")
+            group_key = f"{speaker} ({speaker_label}) | {condition} | {item_split}"
             if group_key not in groups:
                 groups[group_key] = {
-                    "total": 0, "pos_total": 0, "pos_accurate": 0,
-                    "neg_total": 0, "neg_correct_reject": 0, "errors": 0
+                    "total_eligible": 0,
+                    "pos_eligible": 0,
+                    "pos_accurate": 0,
+                    "pos_missed": 0,
+                    "pos_clipped": 0,
+                    "pos_errors": 0,
+                    "neg_eligible": 0,
+                    "neg_correct_reject": 0,
+                    "neg_false_alarm": 0,
+                    "neg_clipped": 0,
+                    "neg_errors": 0,
+                    "errors": 0,
                 }
             g = groups[group_key]
-            g["total"] += 1
-
-            if status == "ERROR":
-                errors += 1
-                g["errors"] += 1
-                continue
-
-            total_decode += res.get("decode_seconds", 0.0)
-            total_audio += res.get("audio_seconds", 0.0)
-            max_decode = max(max_decode, res.get("max_decode_seconds", 0.0))
+            g["total_eligible"] += 1
 
             if label == "positive":
-                pos_total += 1
-                g["pos_total"] += 1
-                if status == "ACCURATE":
-                    pos_accurate += 1
-                    g["pos_accurate"] += 1
-                elif status == "MISSED":
-                    pos_missed += 1
-                elif status == "DUPLICATE":
-                    pos_duplicate += 1
-            else:
-                neg_total += 1
-                g["neg_total"] += 1
-                if status == "CORRECT_REJECT":
-                    neg_correct_reject += 1
-                    g["neg_correct_reject"] += 1
+                pos_eligible += 1
+                g["pos_eligible"] += 1
+                if status == "ERROR":
+                    pos_errors += 1
+                    g["pos_errors"] += 1
+                    g["errors"] += 1
                 else:
-                    neg_false_alarm += 1
+                    pos_processed += 1
+                    total_decode += res.get("decode_seconds", 0.0)
+                    total_decoded_audio += res.get("decoded_audio_seconds", 0.0)
+                    total_file_audio += res.get("file_audio_seconds", 0.0)
+                    max_decode = max(max_decode, res.get("max_decode_seconds", 0.0))
 
-        accuracy_pos = (pos_accurate / pos_total) if pos_total > 0 else 0.0
-        frr = (pos_missed / pos_total) if pos_total > 0 else 0.0
-        duplicate_rate = (pos_duplicate / pos_total) if pos_total > 0 else 0.0
-        far = (neg_false_alarm / neg_total) if neg_total > 0 else 0.0
-        rtf = (total_decode / total_audio) if total_audio > 0 else 0.0
+                    if status == "ACCURATE":
+                        pos_accurate += 1
+                        g["pos_accurate"] += 1
+                    elif status == "MISSED":
+                        pos_missed += 1
+                        g["pos_missed"] += 1
+                    elif status == "DUPLICATE":
+                        pos_duplicate += 1
+                    elif status == "CLIPPED":
+                        pos_clipped += 1
+                        g["pos_clipped"] += 1
+            else:
+                neg_eligible += 1
+                g["neg_eligible"] += 1
+                if status == "ERROR":
+                    neg_errors += 1
+                    g["neg_errors"] += 1
+                    g["errors"] += 1
+                else:
+                    neg_processed += 1
+                    total_decode += res.get("decode_seconds", 0.0)
+                    total_decoded_audio += res.get("decoded_audio_seconds", 0.0)
+                    total_file_audio += res.get("file_audio_seconds", 0.0)
+                    max_decode = max(max_decode, res.get("max_decode_seconds", 0.0))
+
+                    if status == "CORRECT_REJECT":
+                        neg_correct_reject += 1
+                        g["neg_correct_reject"] += 1
+                    elif status == "FALSE_ALARM":
+                        neg_false_alarm += 1
+                        g["neg_false_alarm"] += 1
+                    elif status == "CLIPPED":
+                        neg_clipped += 1
+                        g["neg_clipped"] += 1
+
+        accuracy_pos = (pos_accurate / pos_eligible) if pos_eligible > 0 else 0.0
+        frr = (pos_missed / pos_eligible) if pos_eligible > 0 else 0.0
+        duplicate_rate = (pos_duplicate / pos_eligible) if pos_eligible > 0 else 0.0
+        far = (neg_false_alarm / neg_eligible) if neg_eligible > 0 else 0.0
+        decode_rtf = (total_decode / total_decoded_audio) if total_decoded_audio > 0 else 0.0
+        wall_decode_rtf = (total_decode / total_file_audio) if total_file_audio > 0 else 0.0
 
         metrics[prof] = {
             "profile": prof,
-            "total_samples": len(evaluated_samples),
+            "eligible_total": len(evaluated_samples),
+            "processed_total": pos_processed + neg_processed,
+            "errors": pos_errors + neg_errors,
             "positive": {
-                "total": pos_total,
+                "eligible": pos_eligible,
+                "processed": pos_processed,
                 "accurate": pos_accurate,
                 "missed": pos_missed,
                 "duplicate": pos_duplicate,
+                "clipped": pos_clipped,
+                "errors": pos_errors,
                 "accurate_rate": accuracy_pos,
                 "frr": frr,
                 "duplicate_rate": duplicate_rate,
             },
             "negative": {
-                "total": neg_total,
+                "eligible": neg_eligible,
+                "processed": neg_processed,
                 "correct_reject": neg_correct_reject,
                 "false_alarm": neg_false_alarm,
+                "clipped": neg_clipped,
+                "errors": neg_errors,
                 "far": far,
             },
-            "errors": errors,
             "performance": {
                 "total_decode_seconds": total_decode,
-                "total_audio_seconds": total_audio,
+                "total_decoded_audio_seconds": total_decoded_audio,
+                "total_file_audio_seconds": total_file_audio,
                 "max_decode_seconds": max_decode,
-                "rtf": rtf,
+                "decode_rtf": decode_rtf,
+                "wall_decode_per_file_audio": wall_decode_rtf,
             },
             "groups": groups,
         }
 
+    reproducibility = get_reproducibility_metadata(
+        profiles=profiles,
+        wake_word=wake_word,
+        aliases=aliases,
+        cooldown_seconds=cooldown_seconds,
+        split=split,
+        evaluation_mode=evaluation_mode,
+    )
+
     return {
         "timestamp": datetime.now().astimezone().isoformat(),
+        "split": split,
+        "evaluation_mode": evaluation_mode,
+        "eligible_total": len(evaluated_samples),
         "total_samples": len(evaluated_samples),
         "profiles": list(profiles),
         "metrics": metrics,
+        "reproducibility": reproducibility,
         "samples": evaluated_samples,
     }
 
 
+def escape_markdown(text):
+    if text is None:
+        return ""
+    return str(text).replace("|", "\\|").replace("\n", " ").replace("\r", "").strip()
+
+
 def format_evaluation_markdown(results):
-    """Generate Markdown report according to Section 9 of CHILD_VOICE_RECORDING_PLAN.md."""
+    """Generate Markdown report dynamically based on evaluated profiles and correct accounting."""
     lines = []
+    mode = results.get("evaluation_mode", "official")
+    split = results.get("split", "dev")
+
     lines.append(f"# Báo cáo đánh giá offline: Giọng bé và người lớn")
-    lines.append(f"")
+    lines.append("")
+    if mode != "official":
+        lines.append(f"> [!WARNING]")
+        lines.append(f"> Chế độ đánh giá: **{mode.upper()}** (không dùng làm acceptance benchmark chính thức).")
+        lines.append("")
+    else:
+        lines.append(f"- Chế độ: **OFFICIAL BENCHMARK** (chỉ bao gồm mẫu đã duyệt accepted + confirmed)")
+
+    lines.append(f"- Split dữ liệu: **{split}**")
     lines.append(f"- Thời điểm đánh giá: **{results.get('timestamp')}**")
-    lines.append(f"- Tổng số mẫu đã kiểm tra: **{results.get('total_samples')}**")
-    lines.append(f"")
+    lines.append(f"- Tổng số mẫu hợp lệ: **{results.get('eligible_total', len(results.get('samples', [])))}**")
+    lines.append("")
 
+    profiles = results.get("profiles", ["standard", "sensitive"])
     metrics = results.get("metrics", {})
+
     lines.append(f"## 1. So sánh tổng hợp giữa các profile")
-    lines.append(f"")
-    lines.append(f"| Chỉ số | standard (baseline) | sensitive | Mục tiêu pilot |")
-    lines.append(f"| --- | --- | --- | --- |")
+    lines.append("")
 
-    std = metrics.get("standard", {})
-    sen = metrics.get("sensitive", {})
-
-    std_p = std.get("positive", {})
-    sen_p = sen.get("positive", {})
-    std_n = std.get("negative", {})
-    sen_n = sen.get("negative", {})
+    headers = ["Chỉ số"]
+    for p in profiles:
+        tag = "baseline" if p == "standard" else "candidate"
+        headers.append(f"{p} ({tag})")
+    headers.append("Mục tiêu pilot")
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
 
     def pct(r):
         return f"{r * 100:.1f}%" if r is not None else "N/A"
 
-    std_acc = f"{std_p.get('accurate', 0)}/{std_p.get('total', 0)} ({pct(std_p.get('accurate_rate'))})"
-    sen_acc = f"{sen_p.get('accurate', 0)}/{sen_p.get('total', 0)} ({pct(sen_p.get('accurate_rate'))})"
-    lines.append(f"| Nhận đúng 1 lần (dương) | {std_acc} | {sen_acc} | 100% yên tĩnh, ≥90% nhiễu/xa |")
+    # Row 1: Positive accuracy
+    row_acc = ["Nhận đúng 1 lần (dương)"]
+    for p in profiles:
+        m = metrics.get(p, {})
+        pos = m.get("positive", {})
+        err = pos.get("errors", 0)
+        err_str = f" [{err} ERROR]" if err else ""
+        row_acc.append(f"{pos.get('accurate', 0)}/{pos.get('eligible', 0)} ({pct(pos.get('accurate_rate'))}){err_str}")
+    row_acc.append("100% yên tĩnh, ≥90% nhiễu/xa")
+    lines.append("| " + " | ".join(row_acc) + " |")
 
-    std_frr = f"{std_p.get('missed', 0)}/{std_p.get('total', 0)} ({pct(std_p.get('frr'))})"
-    sen_frr = f"{sen_p.get('missed', 0)}/{sen_p.get('total', 0)} ({pct(sen_p.get('frr'))})"
-    lines.append(f"| Bỏ sót FRR | {std_frr} | {sen_frr} | 0% yên tĩnh, ≤10% nhiễu/xa |")
+    # Row 2: FRR
+    row_frr = ["Bỏ sót FRR"]
+    for p in profiles:
+        pos = metrics.get(p, {}).get("positive", {})
+        row_frr.append(f"{pos.get('missed', 0)}/{pos.get('eligible', 0)} ({pct(pos.get('frr'))})")
+    row_frr.append("0% yên tĩnh, ≤10% nhiễu/xa")
+    lines.append("| " + " | ".join(row_frr) + " |")
 
-    std_dup = f"{std_p.get('duplicate', 0)} ({pct(std_p.get('duplicate_rate'))})"
-    sen_dup = f"{sen_p.get('duplicate', 0)} ({pct(sen_p.get('duplicate_rate'))})"
-    lines.append(f"| Lượt trùng (>1 event) | {std_dup} | {sen_dup} | 0 lượt trùng |")
+    # Row 3: Duplicate
+    row_dup = ["Lượt trùng (>1 event)"]
+    for p in profiles:
+        pos = metrics.get(p, {}).get("positive", {})
+        row_dup.append(f"{pos.get('duplicate', 0)} ({pct(pos.get('duplicate_rate'))})")
+    row_dup.append("0 lượt trùng")
+    lines.append("| " + " | ".join(row_dup) + " |")
 
-    std_far = f"{std_n.get('false_alarm', 0)}/{std_n.get('total', 0)} ({pct(std_n.get('far'))})"
-    sen_far = f"{sen_n.get('false_alarm', 0)}/{sen_n.get('total', 0)} ({pct(sen_n.get('far'))})"
-    lines.append(f"| Báo nhầm trên câu âm (FAR) | {std_far} | {sen_far} | 0% |")
+    # Row 4: FAR
+    row_far = ["Báo nhầm trên câu âm (FAR)"]
+    for p in profiles:
+        neg = metrics.get(p, {}).get("negative", {})
+        err = neg.get("errors", 0)
+        err_str = f" [{err} ERROR]" if err else ""
+        row_far.append(f"{neg.get('false_alarm', 0)}/{neg.get('eligible', 0)} ({pct(neg.get('far'))}){err_str}")
+    row_far.append("0%")
+    lines.append("| " + " | ".join(row_far) + " |")
 
-    std_perf = std.get("performance", {})
-    sen_perf = sen.get("performance", {})
-    lines.append(f"| RTF giải mã CPU | {std_perf.get('rtf', 0):.3f} | {sen_perf.get('rtf', 0):.3f} | < 0.100 |")
-    lines.append(f"| Thời gian STT max | {std_perf.get('max_decode_seconds', 0):.3f}s | {sen_perf.get('max_decode_seconds', 0):.3f}s | < 0.500s |")
-    lines.append(f"")
+    # Row 5: RTF (Decode RTF)
+    row_rtf = ["RTF giải mã CPU (decode RTF)"]
+    for p in profiles:
+        perf = metrics.get(p, {}).get("performance", {})
+        row_rtf.append(f"{perf.get('decode_rtf', 0.0):.3f}")
+    row_rtf.append("< 0.100")
+    lines.append("| " + " | ".join(row_rtf) + " |")
+
+    # Row 6: Max STT time
+    row_max = ["Thời gian STT max"]
+    for p in profiles:
+        perf = metrics.get(p, {}).get("performance", {})
+        row_max.append(f"{perf.get('max_decode_seconds', 0.0):.3f}s")
+    row_max.append("< 0.500s")
+    lines.append("| " + " | ".join(row_max) + " |")
+
+    # Row 7: Total errors
+    row_err = ["Tổng lỗi xử lý (errors)"]
+    for p in profiles:
+        err = metrics.get(p, {}).get("errors", 0)
+        row_err.append(f"{err}")
+    row_err.append("0")
+    lines.append("| " + " | ".join(row_err) + " |")
+    lines.append("")
 
     lines.append(f"## 2. Chi tiết từng nhóm thử nghiệm")
-    lines.append(f"")
-    lines.append(f"| Nhóm / Điều kiện | Profile | Mẫu dương đúng | Mẫu âm đúng | Lỗi xử lý |")
-    lines.append(f"| --- | --- | --- | --- | --- |")
+    lines.append("")
+    lines.append(f"| Nhóm / Điều kiện | Profile | Mẫu dương (đúng/tổng) | Mẫu âm (đúng/tổng) | Clipped | Lỗi xử lý |")
+    lines.append(f"| --- | --- | --- | --- | --- | --- |")
 
     all_groups = set()
-    for prof, m in metrics.items():
-        all_groups.update(m.get("groups", {}).keys())
+    for p in profiles:
+        all_groups.update(metrics.get(p, {}).get("groups", {}).keys())
 
     for g_key in sorted(all_groups):
-        for prof in sorted(metrics.keys()):
-            g = metrics[prof].get("groups", {}).get(g_key, {})
-            pos_str = f"{g.get('pos_accurate', 0)}/{g.get('pos_total', 0)}" if g.get('pos_total') else "N/A"
-            neg_str = f"{g.get('neg_correct_reject', 0)}/{g.get('neg_total', 0)}" if g.get('neg_total') else "N/A"
+        for p in profiles:
+            g = metrics.get(p, {}).get("groups", {}).get(g_key, {})
+            pos_str = f"{g.get('pos_accurate', 0)}/{g.get('pos_eligible', 0)}" if g.get("pos_eligible") else "N/A"
+            neg_str = f"{g.get('neg_correct_reject', 0)}/{g.get('neg_eligible', 0)}" if g.get("neg_eligible") else "N/A"
+            clipped_str = str(g.get("pos_clipped", 0) + g.get("neg_clipped", 0))
             err_str = str(g.get("errors", 0))
-            lines.append(f"| `{g_key}` | `{prof}` | {pos_str} | {neg_str} | {err_str} |")
-    lines.append(f"")
+            lines.append(f"| `{escape_markdown(g_key)}` | `{p}` | {pos_str} | {neg_str} | {clipped_str} | {err_str} |")
+    lines.append("")
 
     lines.append(f"## 3. Danh sách chi tiết từng file WAV")
-    lines.append(f"")
-    lines.append(f"| Sample ID | Nhãn | Profile | Events | Status | Transcript STT | Decode (s) |")
-    lines.append(f"| --- | --- | --- | --- | --- | --- | --- |")
+    lines.append("")
+    lines.append(f"| Sample ID | Nhãn | Profile | Events | Status | Clipped | Transcript STT | Decode (s) | Decode RTF |")
+    lines.append(f"| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 
     for s in results.get("samples", []):
-        sid = s.get("sample_id", Path(s.get("source")).name)
-        label = s.get("label")
-        for prof, res in s.get("evaluations", {}).items():
+        sid = s.get("sample_id", Path(s.get("source", "")).name)
+        lbl = s.get("label")
+        for p in profiles:
+            res = s.get("evaluations", {}).get(p, {})
             ev = res.get("events", 0)
             st = res.get("status", "UNKNOWN")
-            tx = " / ".join(res.get("transcripts", [])) or "(không có text)"
-            dec = f"{res.get('decode_seconds', 0):.3f}"
-            lines.append(f"| `{sid}` | `{label}` | `{prof}` | {ev} | **{st}** | {tx} | {dec} |")
-    lines.append(f"")
+            clp = res.get("clipped_total", 0)
+            tx = " / ".join(escape_markdown(t) for t in res.get("transcripts", [])) or "(không có text)"
+            dec = f"{res.get('decode_seconds', 0.0):.3f}"
+            rtf_val = f"{res.get('decode_rtf', 0.0):.3f}"
+            lines.append(
+                f"| `{escape_markdown(sid)}` | `{lbl}` | `{p}` | {ev} | **{st}** | {clp} | {tx} | {dec} | {rtf_val} |"
+            )
+    lines.append("")
 
     return "\n".join(lines)
 
 
-def save_evaluation_results(results, output_path=None):
+def save_evaluation_results(results, output_path=None, force=False):
+    """Save evaluation results to JSON and Markdown; protect against overwriting without --force."""
     if output_path is None:
         ensure_child_study_dirs()
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S_%f")
         output_path = RESULTS_DIR / f"eval-{ts}.json"
     else:
         output_path = Path(output_path)
+        if output_path.exists() and not force:
+            raise FileExistsError(
+                f"File '{output_path}' đã tồn tại; dùng --force nếu muốn ghi đè."
+            )
+
+    md_path = output_path.with_suffix(".md")
+    if md_path.exists() and output_path != (RESULTS_DIR / output_path.name) and not force:
+        raise FileExistsError(
+            f"File '{md_path}' đã tồn tại; dùng --force nếu muốn ghi đè."
+        )
 
     old_umask = os.umask(0o077)
     try:
-        output_path.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        md_path = output_path.with_suffix(".md")
-        md_path.write_text(format_evaluation_markdown(results), encoding="utf-8")
+        tmp_json = output_path.with_suffix(".tmp.json")
+        tmp_json.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        tmp_md = output_path.with_suffix(".tmp.md")
+        tmp_md.write_text(format_evaluation_markdown(results), encoding="utf-8")
+
+        tmp_json.replace(output_path)
+        tmp_md.replace(md_path)
     finally:
         os.umask(old_umask)
+
     return output_path

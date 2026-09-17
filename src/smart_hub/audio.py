@@ -150,3 +150,27 @@ def wav_frames(path):
             yield frame
         if read != expected or read == 0:
             raise AudioError("WAV rỗng hoặc bị cắt cụt.")
+
+
+def is_pcm_frame_clipped(frame, threshold=0.01):
+    """Check whether a PCM frame has clipping fraction exceeding threshold."""
+    samples = array("h")
+    samples.frombytes(frame)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples:
+        return False
+    return (sum(abs(x) >= 32767 for x in samples) / len(samples)) > threshold
+
+
+def is_segment_clipped(samples, threshold=0.01):
+    """Check whether a float audio segment from VAD has clipping exceeding threshold."""
+    try:
+        import numpy as np
+        if isinstance(samples, np.ndarray):
+            return float(np.mean(np.abs(samples) >= (32767 / 32768))) > threshold
+    except ImportError:
+        pass
+    if hasattr(samples, "__len__") and len(samples) > 0:
+        return (sum(abs(x) >= (32767 / 32768) for x in samples) / len(samples)) > threshold
+    return False

@@ -4,7 +4,7 @@ import json
 import math
 import time
 
-from .audio import AudioError, RATE, pcm_stats, wav_frames
+from .audio import AudioError, RATE, pcm_stats, wav_frames, is_pcm_frame_clipped, is_segment_clipped
 from .capture_pump import CapturePump
 from .feedback import VoiceFeedback
 from .stt_keyword import KeywordTrigger
@@ -43,10 +43,9 @@ class STTSession:
             self.player.play()
 
     def process(self, segments):
-        import numpy as np
         for samples in segments:
             self.segments += 1
-            if float(np.mean(np.abs(samples) >= 32767 / 32768)) > 0.01:
+            if is_segment_clipped(samples):
                 self.clipped += 1
                 continue
             started = time.monotonic()
@@ -66,7 +65,6 @@ class STTSession:
                     break
 
     def feed(self, frame):
-        import numpy as np
         self.samples += len(frame) // 2
         suppressing = bool(self.player and self.player.suppressing())
         if suppressing:
@@ -75,8 +73,7 @@ class STTSession:
             self.suppressed = True
             return  # Keep draining PCM; neither VAD nor ASR sees reply/echo audio.
         self.suppressed = False
-        samples = np.frombuffer(frame, dtype="<i2").astype(np.int32)
-        if float(np.mean(np.abs(samples) >= 32767)) > 0.01:
+        if is_pcm_frame_clipped(frame):
             self.clipped += 1
             self.backend.reset()
             return
