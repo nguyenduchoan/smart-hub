@@ -39,7 +39,10 @@ def verify_audio_file(path, expected_sha=None):
     except Exception as exc:
         return False, f"Lỗi đọc file: {exc}", None
 
-    if expected_sha and actual_sha.lower() != str(expected_sha).lower():
+    if not expected_sha or not str(expected_sha).strip():
+        return False, "Thiếu source_sha256 gốc trong nhãn", None
+
+    if actual_sha.lower() != str(expected_sha).lower():
         return (
             False,
             f"SHA-256 mismatch (kỳ vọng {expected_sha[:12]}..., thực tế {actual_sha[:12]}...)",
@@ -128,6 +131,10 @@ def update_session_review_status(session_ids, reviewer, sessions_file=None, labe
 def review_session(target_dir=None, target_session=None, auto_qc=False, reviewer="QC"):
     config = load_config()
     labels = load_labels()
+
+    if not target_session and not target_dir:
+        print("[ERROR] Cần chỉ định --session-id hoặc --dir để chọn mẫu cần duyệt.", file=sys.stderr)
+        return
 
     # Find matching labels
     matching = []
@@ -237,8 +244,9 @@ def review_session(target_dir=None, target_session=None, auto_qc=False, reviewer
                     print(f"  Đang phát qua loa ({config.playback_device})...")
                     subprocess.run(["aplay", "-q", "-D", config.playback_device, str(wav_full)])
             elif choice == "a":
-                if not ok:
-                    print(f"  [BLOCK] KHÔNG THỂ CHẤP NHẬN: file audio không đạt kiểm tra kỹ thuật ({err_msg})!")
+                if not ok or not item.get("source_sha256"):
+                    reason = err_msg if not ok else "Thiếu source_sha256 gốc trong nhãn"
+                    print(f"  [BLOCK] KHÔNG THỂ CHẤP NHẬN: file audio không đạt kiểm tra kỹ thuật hoặc thiếu SHA gốc ({reason})!")
                     print("  Chỉ có thể chọn 'r' (reject) hoặc 'n' (needs_review).")
                     continue
                 note = input("  Ghi chú xác nhận người nói và nội dung (Enter nếu mặc định): ").strip() or "Đủ đầu câu và âm ơi; xác nhận người nói và tín hiệu tốt"
@@ -281,7 +289,7 @@ def review_session(target_dir=None, target_session=None, auto_qc=False, reviewer
     print("\n[DONE] Hoàn tất quá trình duyệt!")
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description="Công cụ kiểm tra, duyệt và nghe lại mẫu thu giọng (CV-02, CV-06).")
     sub = parser.add_subparsers(dest="command")
 
@@ -298,8 +306,12 @@ def main():
         help="Kiểm tra kỹ thuật tự động (format, readable, SHA-256); đặt technical_pass nhưng KHÔNG tự xác nhận người nói.",
     )
     rev.add_argument("--reviewer", default="QC", help="Tên người duyệt.")
+    return parser
 
-    args = parser.parse_args()
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
     ensure_child_study_dirs()
 
     if args.command == "review":

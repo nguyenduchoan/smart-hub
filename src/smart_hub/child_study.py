@@ -407,7 +407,9 @@ def save_session_and_labels(
 
 
 def is_sample_eligible_for_official_benchmark(item, root=ROOT):
-    """Check if a sample meets all criteria for official benchmark.
+    """Check if a sample meets dataset selection criteria for official benchmark.
+    Runtime integrity (file existence, SHA matching, audio format) is evaluated
+    in evaluate_sample() so failures count as ERROR in the benchmark denominator.
     Returns (is_eligible, reason).
     """
     if item.get("review_status") != "accepted":
@@ -415,11 +417,17 @@ def is_sample_eligible_for_official_benchmark(item, root=ROOT):
     if item.get("speaker_confirmed") is not True:
         return False, "speaker_confirmed is not True"
     source = item.get("source")
-    if not source:
+    if not source or not str(source).strip():
         return False, "source is missing"
-    expected_sha = item.get("source_sha256")
-    if not expected_sha:
-        return False, "source_sha256 is missing"
+    sample_id = item.get("sample_id")
+    if not sample_id or not str(sample_id).strip():
+        return False, "sample_id is missing"
+    speaker_id = item.get("speaker_id")
+    if not speaker_id or not str(speaker_id).strip():
+        return False, "speaker_id is missing"
+    session_id = item.get("session_id")
+    if not session_id or not str(session_id).strip():
+        return False, "session_id is missing"
     label = item.get("label")
     if label not in VALID_LABELS:
         return False, f"invalid label '{label}'"
@@ -431,19 +439,6 @@ def is_sample_eligible_for_official_benchmark(item, root=ROOT):
     split = item.get("split")
     if split not in VALID_SPLITS:
         return False, f"invalid split '{split}'"
-
-    wav_path = Path(source)
-    if not wav_path.is_absolute():
-        wav_path = Path(root) / wav_path
-    if not wav_path.is_file():
-        return False, f"WAV file not found: {wav_path}"
-
-    try:
-        actual_sha = compute_file_sha256(wav_path)
-        if actual_sha.lower() != str(expected_sha).lower():
-            return False, f"SHA-256 mismatch: expected {expected_sha}, got {actual_sha}"
-    except Exception as exc:
-        return False, f"Error reading audio file: {exc}"
 
     return True, "OK"
 
@@ -623,7 +618,15 @@ def evaluate_sample(
     actual_sha = None
     if not wav_path.is_file():
         integrity_error = f"File not found: {wav_path}"
-    elif expected_sha:
+    elif not expected_sha or not str(expected_sha).strip():
+        if sample.get("review_status") == "accepted":
+            integrity_error = "source_sha256 is missing"
+        else:
+            try:
+                actual_sha = compute_file_sha256(wav_path)
+            except Exception as exc:
+                integrity_error = f"Error reading audio file: {exc}"
+    else:
         try:
             actual_sha = compute_file_sha256(wav_path)
             if actual_sha.lower() != str(expected_sha).lower():
@@ -740,12 +743,18 @@ def get_reproducibility_metadata(profiles, wake_word, aliases, cooldown_seconds,
     except Exception:
         pass
 
+    bundle_name = "unknown"
+    archive_sha256 = "unknown"
     model_hashes = {}
     try:
-        from .stt_assets import HASHES
-        model_hashes = dict(HASHES)
-    except Exception:
-        pass
+        from .stt_assets import BUNDLE, FILES, ARCHIVE_SHA256
+        bundle_name = BUNDLE
+        archive_sha256 = ARCHIVE_SHA256
+        model_hashes = {fname: info[1] for fname, info in FILES.items()}
+    except Exception as exc:
+        bundle_name = f"error: {exc}"
+        archive_sha256 = f"error: {exc}"
+        model_hashes = {"error": str(exc)}
 
     return {
         "git_commit": git_commit,
@@ -755,7 +764,8 @@ def get_reproducibility_metadata(profiles, wake_word, aliases, cooldown_seconds,
         "cooldown_seconds": cooldown_seconds,
         "evaluated_profiles": list(profiles),
         "wake_profiles_config": profile_configs,
-        "stt_model_bundle": "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20 (Vietnamese fine-tuned)",
+        "stt_model_bundle": bundle_name,
+        "stt_archive_sha256": archive_sha256,
         "model_file_hashes": model_hashes,
         "split": split,
         "evaluation_mode": evaluation_mode,
@@ -1014,7 +1024,7 @@ def format_evaluation_markdown(results):
         err = pos.get("errors", 0)
         err_str = f" [{err} ERROR]" if err else ""
         row_acc.append(f"{pos.get('accurate', 0)}/{pos.get('eligible', 0)} ({pct(pos.get('accurate_rate'))}){err_str}")
-    row_acc.append("100% yên tĩnh, ≥90% nhiễu/xa")
+    row_acc.append("N/A - xem acceptance theo nhóm")
     lines.append("| " + " | ".join(row_acc) + " |")
 
     # Row 2: FRR
@@ -1022,7 +1032,7 @@ def format_evaluation_markdown(results):
     for p in profiles:
         pos = metrics.get(p, {}).get("positive", {})
         row_frr.append(f"{pos.get('missed', 0)}/{pos.get('eligible', 0)} ({pct(pos.get('frr'))})")
-    row_frr.append("0% yên tĩnh, ≤10% nhiễu/xa")
+    row_frr.append("N/A - xem acceptance theo nhóm")
     lines.append("| " + " | ".join(row_frr) + " |")
 
     # Row 3: Duplicate

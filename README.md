@@ -189,19 +189,27 @@ không thay mẫu của engine `listen`.
 
 Quy trình bảo đảm toàn vẹn dữ liệu: **thu âm → kiểm tra kỹ thuật → duyệt thủ công → đánh giá offline**.
 
-### 1. Kiểm tra kỹ thuật tự động (`--auto-qc`)
+### 1. Kiểm tra kỹ thuật tự động (`review --auto-qc`)
 Kiểm tra tính toàn vẹn file WAV, định dạng PCM 16kHz mono 16-bit và khớp SHA-256 với nhãn:
 ```bash
-.venv/bin/python scripts/review_child_study.py --auto-qc
+.venv/bin/python scripts/review_child_study.py review --session-id S01 --auto-qc
 ```
+(hoặc dùng `--dir recordings/child-study/...` khi duyệt theo thư mục).
 Lệnh này chỉ đánh dấu `technical_pass` và không tự động xác nhận người nói (`speaker_confirmed`).
 
 ### 2. Duyệt nhãn thủ công (Interactive Review)
 Người vận hành nghe lại từng file, kiểm tra tạp âm/clipping, xác nhận đúng người nói và phê duyệt:
 ```bash
-.venv/bin/python scripts/review_child_study.py
+.venv/bin/python scripts/review_child_study.py review --session-id S01 --reviewer QC
 ```
+(hoặc dùng `--dir recordings/child-study/...` khi duyệt theo thư mục).
 Sau khi duyệt, mẫu được cập nhật `speaker_confirmed: true`, `review_status: "accepted"`, lưu tên người duyệt và thời điểm duyệt.
+
+Để xem tổng quan tiến độ và trạng thái các phiên thu:
+```bash
+.venv/bin/python scripts/review_child_study.py summary
+```
+(hoặc gọi không tham số `.venv/bin/python scripts/review_child_study.py`).
 
 ### 3. Đánh giá offline chính thức (Official Benchmark)
 Mặc định runner chỉ đánh giá tập `--split dev` và nghiêm ngặt yêu cầu các mẫu đã được duyệt chấp nhận (`review_status == "accepted"`, `speaker_confirmed == true`, đúng SHA-256). Tập `test` được bảo vệ độc lập:

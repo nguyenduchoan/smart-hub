@@ -385,20 +385,23 @@ hoạt động theo nguyên tắc **thu âm → kiểm tra kỹ thuật → duy�
 1. **Thu âm**: `scripts/record_wake_samples.py` tính SHA-256 toàn bộ byte của
    từng file WAV, ghi metadata vào manifest phiên và đồng bộ nhãn với trạng thái
    ban đầu `captured_pending_review`, `speaker_confirmed: false`.
-2. **Kiểm tra kỹ thuật tự động**: `scripts/review_child_study.py --auto-qc`
-   kiểm tra tính toàn vẹn file WAV, định dạng (16 kHz, mono, 16-bit PCM) và
+2. **Kiểm tra kỹ thuật tự động**: `scripts/review_child_study.py review --session-id <ID> --auto-qc`
+   (hoặc `--dir <DIR>`) kiểm tra tính toàn vẹn file WAV, định dạng (16 kHz, mono, 16-bit PCM) và
    khớp checksum SHA-256. Lệnh này chỉ đánh dấu `technical_pass`, **không** tự
    động xác nhận danh tính người nói.
 3. **Duyệt thủ công (Interactive Review)**: Người vận hành nghe lại từng file qua
-   `scripts/review_child_study.py`, kiểm tra tạp âm/clipping, xác nhận đúng người
+   `scripts/review_child_study.py review --session-id <ID> --reviewer <NAME>`
+   (hoặc `--dir <DIR>`), kiểm tra tạp âm/clipping, xác nhận đúng người
    nói (`speaker_confirmed: true`), ghi nhận reviewer và thời điểm, và chuyển
-   trạng thái sang `review_status: "accepted"`.
+   trạng thái sang `review_status: "accepted"`. Dùng subcommand `summary` để xem thống kê.
 4. **Tiêu chí nghiệm thu chính thức (Official Acceptance Criteria)**:
-   Runner chỉ chấp nhận mẫu thỏa mãn cả 3 điều kiện:
+   Runner chọn mẫu vào benchmark theo tiêu chuẩn:
    - `review_status == "accepted"`
    - `speaker_confirmed is True`
-   - File WAV trên đĩa khớp hoàn toàn SHA-256 với `source_sha256` trong nhãn.
-   Mẫu vi phạm checksum hoặc chưa duyệt sẽ bị chặn/loại khỏi benchmark chính thức.
+   - Metadata định danh, nhãn và expected events hợp lệ.
+   Sau khi đã được chọn vào benchmark, nếu file WAV bị mất hoặc sai checksum SHA-256,
+   mẫu được đánh giá là `ERROR` và **vẫn giữ trong mẫu số (denominator)**, không được
+   loại bỏ trước benchmark để thổi phồng kết quả.
 5. **Mặc định tập Dev — Bảo vệ tập Test**:
    `scripts/evaluate_child_study.py` mặc định chạy `--split dev`. Tập `test`
    giữ riêng và chỉ được kích hoạt tường minh bằng `--split test` sau khi đã chốt

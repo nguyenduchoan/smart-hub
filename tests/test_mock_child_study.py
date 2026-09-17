@@ -435,15 +435,10 @@ class MockChildStudyTests(unittest.TestCase):
 
     # 18. default split không expose test
     def test_18_default_split_is_dev_not_test(self):
-        with patch("sys.argv", ["evaluate_child_study.py"]):
-            import argparse
-            # Check default from parser
-            for action in eval_cli.main.__globals__["argparse"].ArgumentParser()._actions:
-                pass
-            with patch("scripts.evaluate_child_study.load_labels", return_value=[]), \
-                 patch("sys.stderr", io.StringIO()), \
-                 self.assertRaises(SystemExit):
-                eval_cli.main()
+        parser = eval_cli.build_parser()
+        args = parser.parse_args([])
+        self.assertEqual(args.split, "dev")
+        self.assertNotEqual(args.split, "test")
 
     # 19. custom child speaker ID vẫn filter đúng bằng speaker label
     def test_19_custom_child_speaker_id_filtered_by_speaker_label(self):
@@ -536,14 +531,355 @@ class MockChildStudyTests(unittest.TestCase):
             self.assertEqual(updated_sessions[0]["reviewer"], "Reviewer_Alice")
             self.assertEqual(updated_sessions[0]["status"], "reviewed")
 
-    # 24. sync failure không bị coi là hoàn thành sạch
-    def test_24_sync_failure_not_reported_as_clean_success(self):
+    # 24. recorder sync failure giữ status=sync_failed, không bị đổi thành interrupted
+    def test_24_recorder_sync_failure_sets_sync_failed_and_does_not_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            mock_capture = MagicMock()
+            mock_capture.__enter__.return_value = mock_capture
+            mock_capture.read_frame.return_value = b"\x00" * 640
+
+            mock_player = MagicMock()
+            mock_player.__enter__.return_value = mock_player
+            mock_player.poll.return_value = 0
+            mock_player.returncode = 0
+
+            with patch("scripts.record_wake_samples.AlsaCapture", return_value=mock_capture), \
+                 patch("scripts.record_wake_samples.ROOT", tmp_path), \
+                 patch("scripts.record_wake_samples.subprocess.Popen", return_value=mock_player), \
+                 patch("scripts.record_wake_samples.save_session_and_labels", side_effect=ChildStudyDataError("Simulated metadata sync failure")), \
+                 patch("sys.argv", ["record_wake_samples.py", "--speaker", "child", "--takes", "1"]):
+                with self.assertRaises(ChildStudyDataError):
+                    record_cli.main()
+
+            rec_dirs = list((tmp_path / "recordings").glob("*child*"))
+            self.assertEqual(len(rec_dirs), 1)
+            manifest_file = rec_dirs[0] / "manifest.json"
+            self.assertTrue(manifest_file.exists())
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["status"], "sync_failed")
+            self.assertNotEqual(manifest["status"], "interrupted")
+            self.assertIn("Simulated metadata sync failure", manifest.get("sync_error", ""))
+            self.assertEqual(len(manifest["clips"]), 1)
+            self.assertTrue((rec_dirs[0] / "take-01.wav").exists())
+
+    # 25. 10 accepted/confirmed, trong đó 1 missing WAV -> eligible_total=10, errors=1, denominator=10
+    def test_25_missing_wav_remains_in_denominator_as_error(self):
         with tempfile.TemporaryDirectory() as tmp:
-            sess = {"session_id": "S01"}
-            # Force save_session_and_labels to fail by invalid entry
-            bad_entry = {"sample_id": "s1"}  # Missing required fields
-            with self.assertRaises(ChildStudyDataError):
-                save_session_and_labels(sess, [bad_entry], sessions_file=Path(tmp)/"s.json", labels_file=Path(tmp)/"l.jsonl")
+            root = Path(tmp)
+            samples = []
+            for i in range(1, 10):
+                wav = create_fake_wav(root / f"good_{i}.wav")
+                sha = compute_file_sha256(wav)
+                samples.append(
+                    create_label_entry(
+                        f"s{i}", f"good_{i}.wav", sha, "child_01", "S1",
+                        split="dev", label="positive",
+                        speaker_confirmed=True, review_status="accepted",
+                    )
+                )
+            # 10th sample is accepted+confirmed but missing WAV
+            samples.append(
+                create_label_entry(
+                    "s10_missing", "nonexistent.wav", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    "child_01", "S1", split="dev", label="positive",
+                    speaker_confirmed=True, review_status="accepted",
+                )
+            )
+            eligible, ineligible = filter_samples(samples, split="dev", allow_unreviewed=False, root=root)
+            self.assertEqual(len(eligible), 10)
+            self.assertEqual(len(ineligible), 0)
+
+            def fake_eval_wav(wav_path, profile="standard", **kwargs):
+                return {
+                    "file": str(wav_path),
+                    "profile": profile,
+                    "events": 1,
+                    "transcripts": ["Maika ơi"],
+                    "clipped_total": 0,
+                    "decode_seconds": 0.01,
+                    "decoded_audio_seconds": 0.1,
+                    "file_audio_seconds": 0.1,
+                    "max_decode_seconds": 0.01,
+                    "decode_rtf": 0.1,
+                    "wall_decode_per_file_audio": 0.1,
+                }
+
+            with patch("smart_hub.child_study.evaluate_wav", side_effect=fake_eval_wav):
+                results = evaluate_dataset(
+                    eligible,
+                    profiles=("standard",),
+                    split="dev",
+                    root=root,
+                )
+            std = results["metrics"]["standard"]
+            self.assertEqual(std["eligible_total"], 10)
+            self.assertEqual(std["processed_total"], 9)
+            self.assertEqual(std["errors"], 1)
+            pos = std["positive"]
+            self.assertEqual(pos["eligible"], 10)
+            self.assertEqual(pos["accurate"], 9)
+            self.assertEqual(pos["errors"], 1)
+            self.assertAlmostEqual(pos["accurate_rate"], 0.9)
+
+    # 26. 10 accepted/confirmed, trong đó 1 SHA mismatch -> eligible_total=10, errors=1, denominator=10
+    def test_26_sha_mismatch_remains_in_denominator_as_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            samples = []
+            for i in range(1, 10):
+                wav = create_fake_wav(root / f"good_{i}.wav")
+                sha = compute_file_sha256(wav)
+                samples.append(
+                    create_label_entry(
+                        f"s{i}", f"good_{i}.wav", sha, "child_01", "S1",
+                        split="dev", label="positive",
+                        speaker_confirmed=True, review_status="accepted",
+                    )
+                )
+            # 10th sample is accepted+confirmed but has wrong SHA
+            bad_wav = create_fake_wav(root / "mismatched.wav")
+            samples.append(
+                create_label_entry(
+                    "s10_badsha", "mismatched.wav", "0000000000000000000000000000000000000000000000000000000000000000",
+                    "child_01", "S1", split="dev", label="positive",
+                    speaker_confirmed=True, review_status="accepted",
+                )
+            )
+            eligible, ineligible = filter_samples(samples, split="dev", allow_unreviewed=False, root=root)
+            self.assertEqual(len(eligible), 10)
+            self.assertEqual(len(ineligible), 0)
+
+            def fake_eval_wav(wav_path, profile="standard", **kwargs):
+                return {
+                    "file": str(wav_path),
+                    "profile": profile,
+                    "events": 1,
+                    "transcripts": ["Maika ơi"],
+                    "clipped_total": 0,
+                    "decode_seconds": 0.01,
+                    "decoded_audio_seconds": 0.1,
+                    "file_audio_seconds": 0.1,
+                    "max_decode_seconds": 0.01,
+                    "decode_rtf": 0.1,
+                    "wall_decode_per_file_audio": 0.1,
+                }
+
+            with patch("smart_hub.child_study.evaluate_wav", side_effect=fake_eval_wav):
+                results = evaluate_dataset(
+                    eligible,
+                    profiles=("standard",),
+                    split="dev",
+                    root=root,
+                )
+            std = results["metrics"]["standard"]
+            self.assertEqual(std["eligible_total"], 10)
+            self.assertEqual(std["processed_total"], 9)
+            self.assertEqual(std["errors"], 1)
+            pos = std["positive"]
+            self.assertEqual(pos["eligible"], 10)
+            self.assertEqual(pos["accurate"], 9)
+            self.assertEqual(pos["errors"], 1)
+            self.assertAlmostEqual(pos["accurate_rate"], 0.9)
+
+    # 27. CLI official evaluation có integrity error -> vẫn save report và exit non-zero
+    def test_27_cli_official_evaluation_integrity_error_saves_report_and_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            labels_file = root / "labels.jsonl"
+            out_json = root / "eval_out.json"
+
+            samples = []
+            for i in range(1, 10):
+                wav = create_fake_wav(root / f"good_{i}.wav")
+                sha = compute_file_sha256(wav)
+                samples.append(
+                    create_label_entry(
+                        f"s{i}", str(wav.relative_to(root)), sha, "child_01", "S1",
+                        split="dev", label="positive",
+                        speaker_confirmed=True, review_status="accepted",
+                    )
+                )
+            # 10th sample with SHA mismatch
+            bad_wav = create_fake_wav(root / "bad.wav")
+            samples.append(
+                create_label_entry(
+                    "s10", str(bad_wav.relative_to(root)), "0000000000000000000000000000000000000000000000000000000000000000",
+                    "child_01", "S1", split="dev", label="positive",
+                    speaker_confirmed=True, review_status="accepted",
+                )
+            )
+            with labels_file.open("w", encoding="utf-8") as f:
+                for s in samples:
+                    f.write(json.dumps(s, ensure_ascii=False) + "\n")
+
+            def fake_eval_wav(wav_path, profile="standard", **kwargs):
+                return {
+                    "file": str(wav_path),
+                    "profile": profile,
+                    "events": 1,
+                    "transcripts": ["Maika ơi"],
+                    "clipped_total": 0,
+                    "decode_seconds": 0.01,
+                    "decoded_audio_seconds": 0.1,
+                    "file_audio_seconds": 0.1,
+                    "max_decode_seconds": 0.01,
+                    "decode_rtf": 0.1,
+                    "wall_decode_per_file_audio": 0.1,
+                }
+
+            with patch("scripts.evaluate_child_study.ROOT", root), \
+                 patch("scripts.evaluate_child_study.LABELS_FILE", labels_file), \
+                 patch("smart_hub.child_study.ROOT", root), \
+                 patch("smart_hub.child_study.evaluate_wav", side_effect=fake_eval_wav), \
+                 patch("sys.stderr", io.StringIO()):
+                with self.assertRaises(SystemExit) as ctx:
+                    eval_cli.main([
+                        "--split", "dev",
+                        "--profile", "standard",
+                        "--output", str(out_json),
+                        "--force",
+                    ])
+                self.assertEqual(ctx.exception.code, 1)
+
+            self.assertTrue(out_json.exists())
+            self.assertTrue(out_json.with_suffix(".md").exists())
+            saved_data = json.loads(out_json.read_text(encoding="utf-8"))
+            self.assertEqual(saved_data["eligible_total"], 10)
+            self.assertEqual(saved_data["metrics"]["standard"]["errors"], 1)
+
+    # 28. pending/rejected/unconfirmed không được tính vào eligible denominator
+    def test_28_pending_rejected_unconfirmed_not_in_eligible_denominator(self):
+        samples = [
+            # 2 accepted+confirmed
+            {"sample_id": "a1", "source": "1.wav", "speaker_id": "c1", "session_id": "S1", "split": "dev", "label": "positive", "expected_events": 1, "review_status": "accepted", "speaker_confirmed": True},
+            {"sample_id": "a2", "source": "2.wav", "speaker_id": "c1", "session_id": "S1", "split": "dev", "label": "negative", "expected_events": 0, "review_status": "accepted", "speaker_confirmed": True},
+            # 2 pending
+            {"sample_id": "p1", "source": "3.wav", "speaker_id": "c1", "session_id": "S1", "split": "dev", "label": "positive", "expected_events": 1, "review_status": "captured_pending_review", "speaker_confirmed": True},
+            {"sample_id": "p2", "source": "4.wav", "speaker_id": "c1", "session_id": "S1", "split": "dev", "label": "positive", "expected_events": 1, "review_status": "technical_pass", "speaker_confirmed": True},
+            # 2 rejected
+            {"sample_id": "r1", "source": "5.wav", "speaker_id": "c1", "session_id": "S1", "split": "dev", "label": "positive", "expected_events": 1, "review_status": "rejected", "speaker_confirmed": True},
+            {"sample_id": "r2", "source": "6.wav", "speaker_id": "c1", "session_id": "S1", "split": "dev", "label": "positive", "expected_events": 1, "review_status": "rejected", "speaker_confirmed": False},
+            # 1 unconfirmed speaker
+            {"sample_id": "u1", "source": "7.wav", "speaker_id": "c1", "session_id": "S1", "split": "dev", "label": "positive", "expected_events": 1, "review_status": "accepted", "speaker_confirmed": False},
+        ]
+        eligible, ineligible = filter_samples(samples, split="dev", allow_unreviewed=False)
+        self.assertEqual(len(eligible), 2)
+        self.assertEqual(len(ineligible), 5)
+        self.assertEqual({e["sample_id"] for e in eligible}, {"a1", "a2"})
+
+    # 29. review parser subcommands and top-level rejection
+    def test_29_review_parser_subcommands(self):
+        parser = review_cli.build_parser()
+        args = parser.parse_args(["review", "--session-id", "S01", "--auto-qc"])
+        self.assertEqual(args.command, "review")
+        self.assertEqual(args.session_id, "S01")
+        self.assertTrue(args.auto_qc)
+
+        args_sum = parser.parse_args(["summary"])
+        self.assertEqual(args_sum.command, "summary")
+
+        args_none = parser.parse_args([])
+        self.assertIsNone(args_none.command)
+
+        with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["--auto-qc"])
+
+    # 30. reproducibility metadata dùng đúng stt_assets BUNDLE và FILES
+    def test_30_reproducibility_metadata_matches_stt_assets(self):
+        from smart_hub import stt_assets
+        from smart_hub.child_study import get_reproducibility_metadata
+        meta = get_reproducibility_metadata(
+            profiles=("standard", "sensitive"),
+            wake_word="Maika ơi",
+            aliases=(),
+            cooldown_seconds=2.0,
+            split="dev",
+            evaluation_mode="official",
+        )
+        self.assertEqual(meta["stt_model_bundle"], stt_assets.BUNDLE)
+        self.assertEqual(meta["stt_archive_sha256"], stt_assets.ARCHIVE_SHA256)
+        expected_hashes = {name: info[1] for name, info in stt_assets.FILES.items()}
+        self.assertEqual(meta["model_file_hashes"], expected_hashes)
+        self.assertNotIn("bilingual-zh-en", meta["stt_model_bundle"])
+
+    # 31. reviewer không accept sample thiếu/wrong SHA; auto-qc không set technical_pass
+    def test_31_review_missing_sha_blocks_accept_and_auto_qc_rejects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wav = create_fake_wav(root / "test.wav")
+            ok, err, stats = review_cli.verify_audio_file(wav, expected_sha="")
+            self.assertFalse(ok)
+            self.assertIn("Thiếu source_sha256", err)
+
+            ok2, err2, stats2 = review_cli.verify_audio_file(wav, expected_sha=None)
+            self.assertFalse(ok2)
+            self.assertIn("Thiếu source_sha256", err2)
+
+            lbl_file = root / "labels.jsonl"
+            sess_file = root / "sessions.json"
+            save_session({"session_id": "S1"}, sess_file)
+            entry = create_label_entry(
+                "s1", str(wav), "", "child_01", "S1",
+                split="dev", label="positive", review_status="captured_pending_review",
+            )
+            save_label(entry, lbl_file)
+
+            with patch("scripts.review_child_study.ROOT", root), \
+                 patch("scripts.review_child_study.load_labels", return_value=[entry]), \
+                 patch("scripts.review_child_study.save_label") as mock_save_label:
+                review_cli.review_session(target_session="S1", auto_qc=True, reviewer="QC")
+                mock_save_label.assert_called_once()
+                saved_entry = mock_save_label.call_args[0][0]
+                self.assertEqual(saved_entry["review_status"], "rejected")
+                self.assertFalse(saved_entry["speaker_confirmed"])
+                self.assertIn("Thiếu source_sha256", saved_entry["review_note"])
+
+    # 32. report markdown không gắn acceptance target condition-specific cạnh aggregate positive rate
+    def test_32_report_markdown_presentation(self):
+        results = {
+            "timestamp": "2026-09-17T20:00:00+07:00",
+            "split": "dev",
+            "evaluation_mode": "official",
+            "eligible_total": 10,
+            "profiles": ["standard", "sensitive"],
+            "metrics": {
+                "standard": {
+                    "eligible_total": 10,
+                    "processed_total": 9,
+                    "errors": 1,
+                    "positive": {"eligible": 10, "processed": 9, "accurate": 9, "missed": 0, "duplicate": 0, "clipped": 0, "errors": 1, "accurate_rate": 0.9, "frr": 0.0, "duplicate_rate": 0.0},
+                    "negative": {"eligible": 0, "processed": 0, "correct_reject": 0, "false_alarm": 0, "clipped": 0, "errors": 0, "far": 0.0},
+                    "performance": {"decode_rtf": 0.04, "max_decode_seconds": 0.05},
+                    "groups": {
+                        "child_01 (child) | quiet | dev": {
+                            "pos_eligible": 10, "pos_accurate": 9, "neg_eligible": 0, "neg_correct_reject": 0, "pos_clipped": 0, "neg_clipped": 0, "errors": 1,
+                        }
+                    }
+                },
+                "sensitive": {
+                    "eligible_total": 10,
+                    "processed_total": 10,
+                    "errors": 0,
+                    "positive": {"eligible": 10, "processed": 10, "accurate": 10, "missed": 0, "duplicate": 0, "clipped": 0, "errors": 0, "accurate_rate": 1.0, "frr": 0.0, "duplicate_rate": 0.0},
+                    "negative": {"eligible": 0, "processed": 0, "correct_reject": 0, "false_alarm": 0, "clipped": 0, "errors": 0, "far": 0.0},
+                    "performance": {"decode_rtf": 0.04, "max_decode_seconds": 0.05},
+                    "groups": {
+                        "child_01 (child) | quiet | dev": {
+                            "pos_eligible": 10, "pos_accurate": 10, "neg_eligible": 0, "neg_correct_reject": 0, "pos_clipped": 0, "neg_clipped": 0, "errors": 0,
+                        }
+                    }
+                }
+            },
+            "samples": []
+        }
+        md = format_evaluation_markdown(results)
+        self.assertIn("N/A - xem acceptance theo nhóm", md)
+        self.assertNotIn("100% yên tĩnh, ≥90% nhiễu/xa", md)
+        self.assertNotIn("0% yên tĩnh, ≤10% nhiễu/xa", md)
+        self.assertIn("9/10", md)
+        self.assertIn("10/10", md)
+        self.assertIn("[1 ERROR]", md)
 
 
 if __name__ == "__main__":

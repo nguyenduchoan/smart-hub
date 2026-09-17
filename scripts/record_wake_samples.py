@@ -337,19 +337,6 @@ def main():
                         for _ in range(75):
                             capture.read_frame()
 
-        manifest["status"] = "captured_pending_review"
-        save()
-        try:
-            sync_to_child_study()
-        except Exception as exc:
-            manifest["status"] = "sync_failed"
-            manifest["sync_error"] = str(exc)
-            save()
-            print(f"\n[ERROR] Lỗi đồng bộ metadata child-study: {exc}", file=sys.stderr, flush=True)
-            raise
-
-        print("\n[DONE] Đã thu đủ cửa sổ; cần đối chiếu nội dung và xác nhận người nói.", flush=True)
-
     except KeyboardInterrupt:
         manifest["status"] = "interrupted"
         save()
@@ -372,6 +359,19 @@ def main():
             pass
         print(f"\n[ERROR] Lỗi thu âm: {exc}", file=sys.stderr, flush=True)
         raise
+
+    manifest["status"] = "captured_pending_review"
+    save()
+    try:
+        sync_to_child_study()
+    except Exception as exc:
+        manifest["status"] = "sync_failed"
+        manifest["sync_error"] = str(exc)
+        save()
+        print(f"\n[ERROR] Lỗi đồng bộ metadata child-study: {exc}", file=sys.stderr, flush=True)
+        raise
+
+    print("\n[DONE] Đã thu đủ cửa sổ; cần đối chiếu nội dung và xác nhận người nói.", flush=True)
 
 
 if __name__ == "__main__":

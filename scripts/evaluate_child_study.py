@@ -22,7 +22,7 @@ from smart_hub.child_study import (
 )
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(
         description="Đánh giá offline wake word giọng trẻ em / người lớn trên các profile (CV-05)."
     )
@@ -90,8 +90,12 @@ def main():
         action="store_true",
         help="Cho phép ghi đè file kết quả nếu đã tồn tại.",
     )
+    return parser
 
-    args = parser.parse_args()
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
     config = load_config()
 
     profiles = ("standard", "sensitive") if args.profile == "both" else (args.profile,)
