@@ -198,9 +198,14 @@ def create_label_entry(
     return entry
 
 
-def load_sessions(sessions_file=None):
+def load_sessions(sessions_file=None, root=None):
     """Load sessions from JSON with fail-fast corruption detection."""
-    path = Path(sessions_file) if sessions_file else SESSIONS_FILE
+    if sessions_file is not None:
+        path = Path(sessions_file)
+    elif root is not None:
+        path = Path(root) / "child-study" / "sessions.json"
+    else:
+        path = SESSIONS_FILE
     if not path.exists():
         return []
     try:
@@ -242,9 +247,14 @@ def save_session(session_info, sessions_file=None, allow_update=True):
         os.umask(old_umask)
 
 
-def load_labels(labels_file=None):
+def load_labels(labels_file=None, root=None):
     """Load labels from JSONL with fail-fast line number error reporting."""
-    path = Path(labels_file) if labels_file else LABELS_FILE
+    if labels_file is not None:
+        path = Path(labels_file)
+    elif root is not None:
+        path = Path(root) / "child-study" / "labels.jsonl"
+    else:
+        path = LABELS_FILE
     if not path.exists():
         return []
     labels = []

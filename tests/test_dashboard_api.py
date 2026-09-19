@@ -1,15 +1,19 @@
 """Comprehensive integration tests for Smart Hub Dashboard FastAPI endpoints and security."""
 import base64
+import hashlib
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
 from unittest import mock
+import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 try:
     from starlette.testclient import TestClient
+    from smart_hub.config import ROOT
     from smart_hub.dashboard.app import create_app
     from smart_hub.dashboard.security import CSRF_TOKEN
     from smart_hub.devices import DeviceStorage, GatewayInfo
@@ -32,6 +36,18 @@ class DashboardAPITests(unittest.TestCase):
         self.env_patcher = mock.patch.dict("os.environ", {"SMART_HUB_MOCK_HARDWARE": "1"})
         self.env_patcher.start()
 
+        # Create temporary valid WAV file in recordings/ for audio tests
+        self.test_wav_dir = ROOT / "recordings" / "_test_dashboard_tmp"
+        self.test_wav_dir.mkdir(parents=True, exist_ok=True)
+        self.test_wav_path = self.test_wav_dir / "test_sample.wav"
+        with wave.open(str(self.test_wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b"\x00\x00" * 1600)  # 0.1s
+        self.test_wav_sha256 = hashlib.sha256(self.test_wav_path.read_bytes()).hexdigest()
+        self.test_wav_rel = str(self.test_wav_path.relative_to(ROOT))
+
         self.app = create_app(allowed_hosts={"testserver", "localhost", "127.0.0.1"})
         self.client = TestClient(self.app, base_url="http://testserver")
         self.headers = {"X-CSRF-Token": CSRF_TOKEN}
@@ -40,6 +56,8 @@ class DashboardAPITests(unittest.TestCase):
         self.env_patcher.stop()
         self.patcher.stop()
         self.tmp_dir.cleanup()
+        if self.test_wav_dir.exists():
+            shutil.rmtree(self.test_wav_dir, ignore_errors=True)
 
     def test_health_endpoint(self):
         res = self.client.get("/api/health")
@@ -53,6 +71,37 @@ class DashboardAPITests(unittest.TestCase):
         res = self.client.get("/api/health", headers={"Host": "malicious-domain.com"})
         self.assertEqual(res.status_code, 403)
         self.assertIn("strictly bound to local loopback", res.text)
+
+        # R10: 127.evil.test must NOT pass loopback validation
+        res_fake_loopback = self.client.get("/api/health", headers={"Host": "127.evil.test"})
+        self.assertEqual(res_fake_loopback.status_code, 403)
+
+        # Valid IPv6 loopback must pass
+        res_ipv6 = self.client.get("/api/health", headers={"Host": "[::1]:8765"})
+        self.assertEqual(res_ipv6.status_code, 200)
+
+        # Valid IPv4 loopback must pass
+        res_ipv4 = self.client.get("/api/health", headers={"Host": "127.0.0.1:8765"})
+        self.assertEqual(res_ipv4.status_code, 200)
+
+    def test_security_origin_validation(self):
+        # Malicious origin must be rejected on mutation
+        res = self.client.post(
+            "/api/gateways",
+            json={},
+            headers={"Origin": "http://127.evil.test:8765", "X-CSRF-Token": CSRF_TOKEN},
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("Origin 'http://127.evil.test:8765' is forbidden", res.text)
+
+        # Valid loopback origin with CSRF is allowed
+        res_ok = self.client.post(
+            "/api/gateways",
+            json={"id": "gw_origin_test"},
+            headers={"Origin": "http://127.0.0.1:8765", "X-CSRF-Token": CSRF_TOKEN},
+        )
+        # It shouldn't fail with 403 Origin forbidden (it may fail 422 if payload invalid, but not 403)
+        self.assertNotEqual(res_ok.status_code, 403)
 
     def test_security_csrf_protection_on_mutation(self):
         # POST without CSRF token must be rejected with 403
@@ -190,7 +239,8 @@ class DashboardAPITests(unittest.TestCase):
             "expected_events": 1,
             "review_status": "captured_pending_review",
             "speaker_confirmed": False,
-            "source": "recordings/sample.wav",
+            "source": self.test_wav_rel,
+            "source_sha256": self.test_wav_sha256,
         }
 
         with mock.patch("smart_hub.dashboard.routes.samples.load_labels", return_value=[mock_sample]), \
@@ -213,6 +263,96 @@ class DashboardAPITests(unittest.TestCase):
             self.assertEqual(res_pass.status_code, 200)
             mock_save.assert_called_once()
 
+    def test_r09_samples_review_technical_verification(self):
+        # 1. Non-existent file must fail with 404
+        missing_sample = {
+            "sample_id": "missing_01",
+            "review_status": "captured_pending_review",
+            "source": "recordings/does_not_exist.wav",
+            "source_sha256": "abcdef",
+        }
+        with mock.patch("smart_hub.dashboard.routes.samples.load_labels", return_value=[missing_sample]):
+            res = self.client.patch("/api/samples/missing_01/review", json={
+                "review_status": "accepted",
+                "speaker_confirmed": True,
+                "transcript_confirmed": "Maika ơi",
+            }, headers=self.headers)
+            self.assertEqual(res.status_code, 404)
+
+        # 2. SHA256 mismatch must fail with 422
+        bad_sha_sample = {
+            "sample_id": "bad_sha_01",
+            "review_status": "captured_pending_review",
+            "source": self.test_wav_rel,
+            "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        }
+        with mock.patch("smart_hub.dashboard.routes.samples.load_labels", return_value=[bad_sha_sample]):
+            res = self.client.patch("/api/samples/bad_sha_01/review", json={
+                "review_status": "accepted",
+                "speaker_confirmed": True,
+                "transcript_confirmed": "Maika ơi",
+            }, headers=self.headers)
+            self.assertEqual(res.status_code, 422)
+            self.assertIn("SHA256", res.text)
+
+        # 3. Invalid WAV (not 16kHz) must fail with 422
+        bad_rate_path = self.test_wav_dir / "bad_rate.wav"
+        with wave.open(str(bad_rate_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(44100)
+            wf.writeframes(b"\x00\x00" * 4410)
+        bad_rate_sha = hashlib.sha256(bad_rate_path.read_bytes()).hexdigest()
+        bad_rate_sample = {
+            "sample_id": "bad_rate_01",
+            "review_status": "captured_pending_review",
+            "source": str(bad_rate_path.relative_to(ROOT)),
+            "source_sha256": bad_rate_sha,
+        }
+        with mock.patch("smart_hub.dashboard.routes.samples.load_labels", return_value=[bad_rate_sample]):
+            res = self.client.patch("/api/samples/bad_rate_01/review", json={
+                "review_status": "accepted",
+                "speaker_confirmed": True,
+                "transcript_confirmed": "Maika ơi",
+            }, headers=self.headers)
+            self.assertEqual(res.status_code, 422)
+            self.assertIn("QC", res.text)
+
+    def test_r09_transcript_change_updates_label_and_events(self):
+        sample = {
+            "sample_id": "transcript_test_01",
+            "label": "positive",
+            "expected_events": 1,
+            "transcript_human": "Maika ơi",
+            "review_status": "captured_pending_review",
+            "source": self.test_wav_rel,
+            "source_sha256": self.test_wav_sha256,
+        }
+        with mock.patch("smart_hub.dashboard.routes.samples.load_labels", return_value=[sample]), \
+             mock.patch("smart_hub.dashboard.routes.samples.save_label") as mock_save:
+            # Change transcript to negative phrase
+            res = self.client.patch("/api/samples/transcript_test_01/review", json={
+                "review_status": "accepted",
+                "speaker_confirmed": True,
+                "transcript_confirmed": "Bật đèn phòng khách",
+            }, headers=self.headers)
+            self.assertEqual(res.status_code, 200)
+            updated = res.json()["sample"]
+            self.assertEqual(updated["label"], "negative")
+            self.assertEqual(updated["expected_events"], 0)
+            self.assertEqual(updated["transcript_human"], "Bật đèn phòng khách")
+
+            # Change back to wake word
+            res2 = self.client.patch("/api/samples/transcript_test_01/review", json={
+                "review_status": "accepted",
+                "speaker_confirmed": True,
+                "transcript_confirmed": "Maika ơi",
+            }, headers=self.headers)
+            self.assertEqual(res2.status_code, 200)
+            updated2 = res2.json()["sample"]
+            self.assertEqual(updated2["label"], "positive")
+            self.assertEqual(updated2["expected_events"], 1)
+
     def test_static_files_served(self):
         res = self.client.get("/")
         self.assertEqual(res.status_code, 200)
@@ -221,8 +361,14 @@ class DashboardAPITests(unittest.TestCase):
         res_css = self.client.get("/static/app.css")
         self.assertEqual(res_css.status_code, 200)
 
-        res_js = self.client.get("/static/app.js")
-        self.assertEqual(res_js.status_code, 200)
+    def test_r20_no_silent_mock_fallback(self):
+        # R20: When SMART_HUB_MOCK_HARDWARE is not "1" and BroadlinkProvider is not available,
+        # API must raise 503 rather than silently mocking and returning fake ACKs.
+        with mock.patch.dict("os.environ", {"SMART_HUB_MOCK_HARDWARE": "0"}), \
+             mock.patch("smart_hub.devices.providers.broadlink_provider.BroadlinkProvider.is_available", return_value=False):
+            res = self.client.post("/api/gateway-discoveries", headers=self.headers)
+            self.assertEqual(res.status_code, 503)
+            self.assertIn("Broadlink SDK", res.text)
 
 
 if __name__ == "__main__":

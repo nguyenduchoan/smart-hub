@@ -23,6 +23,17 @@ function showToast(msg, type = 'info') {
   }, 3500);
 }
 
+// Utility: Escape HTML to prevent XSS (R11)
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 // Utility: Authenticated fetch with CSRF header
 async function apiFetch(url, options = {}) {
   options.headers = options.headers || {};
@@ -45,6 +56,49 @@ async function apiFetch(url, options = {}) {
   return res.json();
 }
 
+// --- Overview Management (R06) ---
+async function loadOverview() {
+  try {
+    const [statusRes, gwsRes, devsRes, samplesRes] = await Promise.allSettled([
+      apiFetch('/api/status'),
+      apiFetch('/api/gateways'),
+      apiFetch('/api/devices'),
+      apiFetch('/api/samples'),
+    ]);
+
+    if (gwsRes.status === 'fulfilled' && Array.isArray(gwsRes.value)) {
+      const gws = gwsRes.value;
+      const totalGw = gws.length;
+      const onlineGw = gws.filter(g => g.status === 'online').length;
+      const elCount = document.getElementById('overview-gw-count');
+      const elSub = document.getElementById('overview-gw-sub');
+      if (elCount) elCount.textContent = totalGw;
+      if (elSub) elSub.textContent = `${onlineGw} online`;
+    }
+
+    if (devsRes.status === 'fulfilled' && Array.isArray(devsRes.value)) {
+      const elCount = document.getElementById('overview-dev-count');
+      if (elCount) elCount.textContent = devsRes.value.length;
+    }
+
+    if (samplesRes.status === 'fulfilled' && samplesRes.value && Array.isArray(samplesRes.value.samples)) {
+      const samples = samplesRes.value.samples;
+      const accepted = samples.filter(s => s.review_status === 'accepted').length;
+      const pending = samples.filter(s => s.review_status === 'needs_review' || !s.review_status).length;
+      const elCount = document.getElementById('overview-samples-count');
+      const elSub = document.getElementById('overview-accepted-sub');
+      const elPending = document.getElementById('overview-pending-count');
+      if (elCount) elCount.textContent = samples.length;
+      if (elSub) elSub.textContent = `${accepted} đã duyệt accepted`;
+      if (elPending) elPending.textContent = pending;
+    }
+  } catch (err) {
+    console.warn('Lỗi tải tổng quan:', err);
+  }
+}
+
+document.getElementById('btn-refresh-overview')?.addEventListener('click', loadOverview);
+
 // --- App Initialization ---
 document.addEventListener('DOMContentLoaded', async () => {
   // 1. Fetch CSRF token
@@ -61,13 +115,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 3. Setup modals
   setupModals();
 
-  // 4. Initial load
-  loadOverview();
-  loadGateways();
-  loadAppliances();
-  loadSamples();
-  loadWakeCandidates();
-  loadEvaluations();
+  // 4. Initial load with isolated error handling (R06)
+  const initialLoaders = [
+    loadOverview,
+    loadGateways,
+    loadAppliances,
+    loadSamples,
+    loadWakeCandidates,
+    loadEvaluations,
+  ];
+  for (const fn of initialLoaders) {
+    try {
+      const p = fn();
+      if (p && typeof p.catch === 'function') {
+        p.catch(err => console.warn(`Initial load error in ${fn.name}:`, err));
+      }
+    } catch (err) {
+      console.warn(`Call failed for ${fn.name}:`, err);
+    }
+  }
 
   // 5. Periodic status poll (every 4 seconds)
   setInterval(pollSystemStatus, 4000);
@@ -319,11 +385,11 @@ async function loadGateways() {
       card.className = 'gw-item-card';
       card.innerHTML = `
         <div class="d-flex justify-content-between align-items-center mb-1">
-          <strong>${gw.name}</strong>
-          <span class="badge ${gw.status === 'online' ? 'badge-success' : 'badge-danger'}">${gw.status}</span>
+          <strong>${escapeHtml(gw.name)}</strong>
+          <span class="badge ${gw.status === 'online' ? 'badge-success' : 'badge-danger'}">${escapeHtml(gw.status)}</span>
         </div>
         <div class="small text-muted mb-2">
-          ${gw.room} · IP: <code>${gw.ip_address}</code> · MAC: <code>${gw.mac}</code>
+          ${escapeHtml(gw.room)} · IP: <code>${escapeHtml(gw.ip_address)}</code> · MAC: <code>${escapeHtml(gw.mac)}</code>
         </div>
         <button class="btn btn-sm btn-secondary btn-check-gw">🔍 Kiểm tra kết nối</button>
       `;
@@ -339,7 +405,7 @@ async function loadGateways() {
       container.appendChild(card);
     });
   } catch (e) {
-    container.innerHTML = `<div class="text-danger">Lỗi tải gateway: ${e.message}</div>`;
+    container.innerHTML = `<div class="text-danger">Lỗi tải gateway: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -361,8 +427,8 @@ async function loadAppliances() {
       const item = document.createElement('div');
       item.className = `dev-nav-item ${app.id === activeApplianceId ? 'active' : ''}`;
       item.innerHTML = `
-        <div class="dev-item-title">${app.name}</div>
-        <div class="dev-item-sub">${app.room || 'Chưa phân phòng'} · ${app.brand} · ${app.buttons_count} nút</div>
+        <div class="dev-item-title">${escapeHtml(app.name)}</div>
+        <div class="dev-item-sub">${escapeHtml(app.room || 'Chưa phân phòng')} · ${escapeHtml(app.brand)} · ${app.buttons_count} nút</div>
       `;
       item.addEventListener('click', () => {
         selectAppliance(app.id);
@@ -415,11 +481,11 @@ function renderRemoteButtons(app) {
     const b = document.createElement('button');
     b.className = `remote-btn ${btn.button_key.includes('power') ? 'btn-power' : ''} ${btn.is_verified ? 'btn-verified' : ''}`;
     b.innerHTML = `
-      <span>${btn.button_name || btn.button_key}</span>
+      <span>${escapeHtml(btn.button_name || btn.button_key)}</span>
       ${btn.is_verified ? '<span class="btn-badge-verified">✓ Đã xác minh</span>' : '<span class="text-muted" style="font-size:10px;">Chưa kiểm chứng</span>'}
     `;
     b.addEventListener('click', () => {
-      sendIRButton(app.id, btn);
+      sendIRButton(app.id, btn, b);
     });
     grid.appendChild(b);
   });
@@ -427,12 +493,18 @@ function renderRemoteButtons(app) {
 
 let lastSentContext = null;
 
-async function sendIRButton(appId, btn) {
+async function sendIRButton(appId, btn, btnEl) {
+  if (btnEl && btnEl.disabled) return;
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.classList.add('loading');
+  }
+
   const reqId = generateUUID();
   const obsBox = document.getElementById('observation-box');
   const obsText = document.getElementById('obs-result-text');
   obsBox.style.display = 'block';
-  obsText.textContent = `Đang gửi lệnh '${btn.button_name}' tới RM4 mini...`;
+  obsText.textContent = `Đang gửi lệnh '${btn.button_name || btn.button_key}' tới RM4 mini...`;
 
   try {
     const res = await apiFetch(`/api/devices/${appId}/actions`, {
@@ -452,7 +524,12 @@ async function sendIRButton(appId, btn) {
     showToast(res.message, res.gateway_ack ? 'success' : 'warning');
   } catch (err) {
     obsText.textContent = `Lỗi gửi lệnh: ${err.message}`;
-    showToast(`Lỗi gửi: ${err.message}`, 'error');
+    showToast(`Lỗi gửi lệnh: ${err.message}`, 'error');
+  } finally {
+    if (btnEl) {
+      btnEl.disabled = false;
+      btnEl.classList.remove('loading');
+    }
   }
 }
 
@@ -496,12 +573,12 @@ function renderObservationsLog(observations) {
   }
   list.innerHTML = observations.map(o => `
     <div class="obs-item p-1 border-bottom small">
-      <strong>${o.button_key}</strong>: 
+      <strong>${escapeHtml(o.button_key)}</strong>:
       <span class="badge ${o.outcome === 'accurate' ? 'badge-success' : (o.outcome === 'inaccurate' ? 'badge-danger' : 'badge-warning')}">
         ${o.outcome === 'accurate' ? 'Đúng chức năng' : (o.outcome === 'inaccurate' ? 'Sai/Không phản hồi' : 'Chưa rõ')}
       </span>
-      <span class="text-muted float-right">${o.recorded_at ? o.recorded_at.substring(11, 19) : ''}</span>
-      <div class="text-muted">${o.user_notes || ''}</div>
+      <span class="text-muted float-right">${o.recorded_at ? escapeHtml(o.recorded_at.substring(11, 19)) : ''}</span>
+      <div class="text-muted">${escapeHtml(o.user_notes || '')}</div>
     </div>
   `).join('');
 }
@@ -542,7 +619,7 @@ async function populateGatewaySelect() {
 async function populateBrandSelect() {
   const category = document.getElementById('new-dev-category').value;
   const select = document.getElementById('new-dev-brand');
-  select.innerHTML = '<option value="">-- Chọn hãng --</option>';
+  select.innerHTML = '<option value="">-- Học từ remote gốc / Không dùng catalog --</option>';
   try {
     const brands = await apiFetch(`/api/catalog/brands?category=${category}`);
     brands.forEach(b => {
@@ -556,7 +633,7 @@ async function populateBrandSelect() {
 
 document.getElementById('new-dev-category')?.addEventListener('change', async () => {
   await populateBrandSelect();
-  document.getElementById('new-dev-codeset').innerHTML = '<option value="">-- Chọn bộ mã --</option>';
+  document.getElementById('new-dev-codeset').innerHTML = '<option value="">-- Học từ remote gốc (Remote trống) --</option>';
   document.getElementById('codeset-preview-box').style.display = 'none';
 });
 
@@ -564,9 +641,13 @@ document.getElementById('new-dev-brand')?.addEventListener('change', async () =>
   const category = document.getElementById('new-dev-category').value;
   const brand = document.getElementById('new-dev-brand').value;
   const select = document.getElementById('new-dev-codeset');
-  select.innerHTML = '<option value="">-- Chọn bộ mã --</option>';
-  if (!brand) return;
+  if (!brand) {
+    select.innerHTML = '<option value="">-- Học từ remote gốc (Remote trống) --</option>';
+    document.getElementById('codeset-preview-box').style.display = 'none';
+    return;
+  }
 
+  select.innerHTML = '<option value="">-- Chọn bộ mã từ catalog (hoặc để trống để học) --</option>';
   try {
     const codesets = await apiFetch(`/api/catalog/code-sets?category=${category}&brand=${encodeURIComponent(brand)}`);
     codesets.forEach(cs => {
@@ -592,9 +673,9 @@ document.getElementById('new-dev-codeset')?.addEventListener('change', async () 
     const buttonKeys = Object.keys(cs.codes || {});
     previewContent.innerHTML = `
       <div class="small">
-        <strong>Nguồn:</strong> ${cs.source_name} (${cs.license})<br>
-        <strong>Các model hỗ trợ:</strong> ${cs.models.join(', ')}<br>
-        <strong>Số nút/preset có sẵn:</strong> ${buttonKeys.length} nút (${buttonKeys.slice(0, 5).join(', ')}...)
+        <strong>Nguồn:</strong> ${escapeHtml(cs.source_name)} (${escapeHtml(cs.license)})<br>
+        <strong>Các model hỗ trợ:</strong> ${escapeHtml(cs.models.join(', '))}<br>
+        <strong>Số nút/preset có sẵn:</strong> ${buttonKeys.length} nút (${escapeHtml(buttonKeys.slice(0, 5).join(', '))}...)
       </div>
     `;
   } catch (e) {}
@@ -604,7 +685,9 @@ document.getElementById('form-create-appliance')?.addEventListener('submit', asy
   e.preventDefault();
   const gateway_id = document.getElementById('new-dev-gateway').value;
   const category = document.getElementById('new-dev-category').value;
-  const brand = document.getElementById('new-dev-brand').value;
+  const brandSelect = document.getElementById('new-dev-brand').value;
+  const brandInput = document.getElementById('new-dev-brand-input')?.value?.trim();
+  const brand = brandSelect || brandInput || 'Chưa rõ';
   const code_set_id = document.getElementById('new-dev-codeset').value;
   const name = document.getElementById('new-dev-name').value.trim();
   const room = document.getElementById('new-dev-room').value.trim();
@@ -884,12 +967,12 @@ async function loadSamples() {
       const tr = document.createElement('tr');
       const badgeClass = s.review_status === 'accepted' ? 'badge-success' : (s.review_status === 'rejected' ? 'badge-danger' : 'badge-warning');
       tr.innerHTML = `
-        <td><code>${s.sample_id}</code></td>
-        <td>${s.speaker_id} (${s.speaker_label})</td>
-        <td><span class="badge">${s.split}</span></td>
-        <td>${s.label}</td>
-        <td>${s.transcript_human || 'Maika ơi'}</td>
-        <td><span class="badge ${badgeClass}">${s.review_status}</span></td>
+        <td><code>${escapeHtml(s.sample_id)}</code></td>
+        <td>${escapeHtml(s.speaker_id)} (${escapeHtml(s.speaker_label)})</td>
+        <td><span class="badge">${escapeHtml(s.split)}</span></td>
+        <td>${escapeHtml(s.label)}</td>
+        <td>${escapeHtml(s.transcript_human || 'Maika ơi')}</td>
+        <td><span class="badge ${badgeClass}">${escapeHtml(s.review_status)}</span></td>
         <td>${s.speaker_confirmed ? '✅ Có' : '❌ Chưa'}</td>
         <td><button class="btn btn-sm btn-primary btn-review-sample">Duyệt mẫu</button></td>
       `;
@@ -899,7 +982,7 @@ async function loadSamples() {
       tbody.appendChild(tr);
     });
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="text-danger">Lỗi tải mẫu: ${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="text-danger">Lỗi tải mẫu: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -995,22 +1078,22 @@ async function loadWakeCandidates() {
       card.className = 'card';
       card.innerHTML = `
         <div class="d-flex justify-content-between align-items-center mb-2">
-          <h4>${c.name}</h4>
+          <h4>${escapeHtml(c.name)}</h4>
           ${c.is_baseline ? '<span class="badge badge-success">Baseline</span>' : '<span class="badge badge-warning">Ứng viên mới</span>'}
         </div>
         <div class="small text-muted mb-2">
-          Engine: <code>${c.engine}</code> · Profile: <code>${c.profile}</code> · Ngưỡng: <code>${c.threshold}</code><br>
-          Config hash: <code>${c.config_hash}</code>
+          Engine: <code>${escapeHtml(c.engine)}</code> · Profile: <code>${escapeHtml(c.profile)}</code> · Ngưỡng: <code>${escapeHtml(c.threshold)}</code><br>
+          Config hash: <code>${escapeHtml(c.config_hash)}</code>
         </div>
-        <p class="small mb-2">${c.notes || 'Không có ghi chú'}</p>
+        <p class="small mb-2">${escapeHtml(c.notes || 'Không có ghi chú')}</p>
         <div class="small">
-          Mẫu tham chiếu: <strong>${c.reference_sample_ids.length}</strong> mẫu
+          Mẫu tham chiếu: <strong>${c.reference_sample_ids ? c.reference_sample_ids.length : 0}</strong> mẫu
         </div>
       `;
       grid.appendChild(card);
     });
   } catch (e) {
-    grid.innerHTML = `<div class="text-danger">Lỗi tải candidates: ${e.message}</div>`;
+    grid.innerHTML = `<div class="text-danger">Lỗi tải candidates: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1084,8 +1167,8 @@ async function loadEvaluations() {
       const item = document.createElement('div');
       item.className = 'eval-history-item p-2 border rounded mb-2 cursor-pointer';
       item.innerHTML = `
-        <strong>${ev.name}</strong><br>
-        <span class="small text-muted">${ev.split} (${ev.mode}) · ${ev.sample_count} mẫu · ${ev.created_at.substring(0, 16).replace('T', ' ')}</span>
+        <strong>${escapeHtml(ev.name)}</strong><br>
+        <span class="small text-muted">${escapeHtml(ev.split)} (${escapeHtml(ev.mode)}) · ${ev.sample_count} mẫu · ${escapeHtml(ev.created_at ? ev.created_at.substring(0, 16).replace('T', ' ') : '')}</span>
       `;
       item.addEventListener('click', () => {
         showEvaluationDetail(ev.id);
@@ -1093,7 +1176,7 @@ async function loadEvaluations() {
       container.appendChild(item);
     });
   } catch (e) {
-    container.innerHTML = `<div class="text-danger small">Lỗi tải evaluations: ${e.message}</div>`;
+    container.innerHTML = `<div class="text-danger small">Lỗi tải evaluations: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1112,19 +1195,59 @@ async function showEvaluationDetail(evalId) {
     // Summary table
     const tbody = document.getElementById('eval-summary-tbody');
     tbody.innerHTML = '';
-    const metrics = ev.results.metrics || {};
+    const metrics = (ev.results && ev.results.metrics) ? ev.results.metrics : {};
     for (const [prof, m] of Object.entries(metrics)) {
       const tr = document.createElement('tr');
+      const posAccurate = m.positive ? (m.positive.accurate ?? 0) : (m.positive_accurate ?? 0);
+      const posProcessed = m.positive ? (m.positive.processed ?? 0) : (m.positive_processed ?? 0);
+      const posEligible = m.positive ? (m.positive.eligible ?? posProcessed) : (m.positive_eligible ?? posProcessed);
+      const posRate = (m.positive && m.positive.accurate_rate != null)
+        ? (m.positive.accurate_rate * 100)
+        : (m.positive_accuracy_pct ?? (posEligible > 0 ? (posAccurate / posEligible * 100) : 0));
+
+      const frr = (m.positive && m.positive.frr != null)
+        ? (m.positive.frr * 100)
+        : (m.false_reject_rate_pct ?? 0);
+      const far = (m.negative && m.negative.far != null)
+        ? (m.negative.far * 100)
+        : (m.false_accept_rate_pct ?? 0);
+      const posDup = m.positive ? (m.positive.duplicate ?? 0) : (m.positive_duplicate ?? 0);
+      const rtf = (m.performance && m.performance.decode_rtf != null)
+        ? m.performance.decode_rtf
+        : (m.decode_rtf_mean ?? 0);
+      const posErrors = m.positive ? (m.positive.errors ?? 0) : (m.positive_errors ?? 0);
+      const negErrors = m.negative ? (m.negative.errors ?? 0) : (m.negative_errors ?? 0);
+      const totalErrors = posErrors + negErrors;
+
+      let childAcc = 0, childElig = 0, adultAcc = 0, adultElig = 0;
+      if (m.groups && typeof m.groups === 'object') {
+        for (const [gname, g] of Object.entries(m.groups)) {
+          const gn = gname.toLowerCase();
+          if (gn.includes('child') || gn.includes('bé')) {
+            childAcc += g.pos_accurate || 0;
+            childElig += g.pos_eligible || 0;
+          } else {
+            adultAcc += g.pos_accurate || 0;
+            adultElig += g.pos_eligible || 0;
+          }
+        }
+      } else {
+        childAcc = m.child_accurate ?? 0;
+        childElig = m.child_eligible ?? 0;
+        adultAcc = m.adult_accurate ?? 0;
+        adultElig = m.adult_eligible ?? 0;
+      }
+
       tr.innerHTML = `
-        <td><strong>${prof}</strong></td>
-        <td>${m.positive_accurate} / ${m.positive_processed} (${m.positive_accuracy_pct.toFixed(1)}%)</td>
-        <td>${m.child_accurate} / ${m.child_eligible}</td>
-        <td>${m.adult_accurate} / ${m.adult_eligible}</td>
-        <td>${m.false_reject_rate_pct.toFixed(1)}%</td>
-        <td>${m.false_accept_rate_pct.toFixed(1)}%</td>
-        <td>${m.positive_duplicate}</td>
-        <td>${m.decode_rtf_mean.toFixed(3)}</td>
-        <td>${m.positive_errors + m.negative_errors}</td>
+        <td><strong>${escapeHtml(prof)}</strong></td>
+        <td>${posAccurate} / ${posEligible} (${posRate.toFixed(1)}%)</td>
+        <td>${childElig > 0 ? `${childAcc} / ${childElig}` : 'N/A'}</td>
+        <td>${adultElig > 0 ? `${adultAcc} / ${adultElig}` : 'N/A'}</td>
+        <td>${frr.toFixed(1)}%</td>
+        <td>${(m.negative && m.negative.eligible > 0) ? `${far.toFixed(1)}%` : 'N/A'}</td>
+        <td>${posDup}</td>
+        <td>${rtf > 0 ? rtf.toFixed(3) : 'N/A'}</td>
+        <td>${totalErrors}</td>
       `;
       tbody.appendChild(tr);
     }

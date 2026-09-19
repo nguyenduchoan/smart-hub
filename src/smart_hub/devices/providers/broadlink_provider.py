@@ -15,6 +15,64 @@ from ..base import (
 logger = logging.getLogger("smart_hub.devices.broadlink")
 
 
+class ProviderUnavailableError(RuntimeError):
+    """Raised when broadlink library is not installed or unavailable."""
+    pass
+
+
+class GatewayIdentityError(ValueError):
+    """Raised when device at target IP does not match expected MAC or devtype (R03)."""
+    pass
+
+
+class GatewayTimeoutError(TimeoutError):
+    """Raised when device communication times out."""
+    pass
+
+
+class GatewayLockedError(PermissionError):
+    """Raised when device is locked in BroadLink mobile app."""
+    pass
+
+
+def send_packet_once(dev, packet_type: int, payload: bytes, timeout: float = 3.0) -> bytes:
+    """Send exactly one UDP packet without retry loops on packet loss (R01 at-most-one attempt)."""
+    dev.count = ((dev.count + 1) | 0x8000) & 0xFFFF
+    packet = bytearray(0x38)
+    packet[0x00:0x08] = bytes.fromhex("5aa5aa555aa5aa55")
+    packet[0x24:0x26] = dev.devtype.to_bytes(2, "little")
+    packet[0x26:0x28] = packet_type.to_bytes(2, "little")
+    packet[0x28:0x2A] = dev.count.to_bytes(2, "little")
+    packet[0x2A:0x30] = dev.mac[::-1]
+    packet[0x30:0x34] = dev.id.to_bytes(4, "little")
+
+    p_checksum = sum(payload, 0xBEAF) & 0xFFFF
+    packet[0x34:0x36] = p_checksum.to_bytes(2, "little")
+
+    padding = (16 - len(payload)) % 16
+    encrypted_payload = dev.encrypt(payload + bytes(padding))
+    packet.extend(encrypted_payload)
+
+    checksum = sum(packet, 0xBEAF) & 0xFFFF
+    packet[0x20:0x22] = checksum.to_bytes(2, "little")
+
+    with dev.lock and socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as conn:
+        conn.settimeout(timeout)
+        conn.sendto(packet, dev.host)
+        resp = conn.recvfrom(2048)[0]
+
+    if len(resp) < 0x30:
+        raise ValueError(f"Packet too short: {len(resp)} bytes")
+
+    nom_checksum = int.from_bytes(resp[0x20:0x22], "little")
+    real_checksum = sum(resp, 0xBEAF) - sum(resp[0x20:0x22]) & 0xFFFF
+
+    if nom_checksum != real_checksum:
+        raise ValueError(f"Checksum mismatch: expected {nom_checksum}, got {real_checksum}")
+
+    return resp
+
+
 class BroadlinkProvider(BaseDeviceProvider):
     """Provider for Broadlink RM devices (RM4 mini, RM4 pro, RM mini 3)."""
 
@@ -144,11 +202,40 @@ class BroadlinkProvider(BaseDeviceProvider):
                 message=f"Không thể liên lạc gateway ({exc}).",
             )
 
-    def enter_learning(self, gateway: GatewayInfo, timeout: float = 30.0, cancel_token: Optional[threading.Event] = None) -> bytes:
+    def _revalidate_and_connect(self, gateway: GatewayInfo, timeout: float = 4.0):
         if not self._broadlink:
-            raise RuntimeError("Thư viện broadlink chưa được cài đặt.")
-        dev = self._broadlink.hello(gateway.ip_address, timeout=5)
-        dev.auth()
+            raise ProviderUnavailableError("Thư viện broadlink chưa được cài đặt (.venv-dashboard).")
+        try:
+            dev = self._broadlink.hello(gateway.ip_address, timeout=int(timeout))
+        except Exception as exc:
+            raise GatewayTimeoutError(f"Không thể kết nối gateway tại {gateway.ip_address}: {exc}") from exc
+
+        # R03: Revalidate MAC
+        dev_mac = ":".join(f"{b:02x}" for b in dev.mac)
+        if dev_mac.lower() != gateway.mac.lower():
+            raise GatewayIdentityError(
+                f"Lỗi danh tính Gateway: IP {gateway.ip_address} có MAC {dev_mac} không khớp MAC đã lưu {gateway.mac}!"
+            )
+
+        # R03: Revalidate devtype if present
+        dev_type = getattr(dev, "devtype", 0)
+        if gateway.devtype and dev_type and dev_type != gateway.devtype:
+            raise GatewayIdentityError(
+                f"Lỗi danh tính Gateway: Thiết bị tại {gateway.ip_address} có devtype 0x{dev_type:x} khác 0x{gateway.devtype:x}!"
+            )
+
+        try:
+            dev.auth()
+        except Exception as exc:
+            err_msg = str(exc).lower()
+            if "authentication" in err_msg or "locked" in err_msg:
+                raise GatewayLockedError(f"Thiết bị tại {gateway.ip_address} bị khóa hoặc từ chối xác thực: {exc}") from exc
+            raise
+
+        return dev
+
+    def enter_learning(self, gateway: GatewayInfo, timeout: float = 30.0, cancel_token: Optional[threading.Event] = None) -> bytes:
+        dev = self._revalidate_and_connect(gateway, timeout=5.0)
         dev.enter_learning()
 
         start_time = time.monotonic()
@@ -171,11 +258,13 @@ class BroadlinkProvider(BaseDeviceProvider):
         raise TimeoutError(f"Hết thời gian chờ {timeout:.0f}s: Không nhận được tín hiệu IR từ remote gốc.")
 
     def send_code(self, gateway: GatewayInfo, code_bytes: bytes) -> bool:
-        if not self._broadlink:
-            raise RuntimeError("Thư viện broadlink chưa được cài đặt.")
-        dev = self._broadlink.hello(gateway.ip_address, timeout=4)
-        dev.auth()
-        dev.send_data(code_bytes)
+        dev = self._revalidate_and_connect(gateway, timeout=4.0)
+        # R01: Enforce at-most-one UDP attempt by wrapping send_packet
+        dev.send_packet = lambda pt, pl: send_packet_once(dev, pt, pl, timeout=dev.timeout)
+        try:
+            dev.send_data(code_bytes)
+        except (socket.timeout, TimeoutError) as exc:
+            raise GatewayTimeoutError(f"Gửi lệnh IR quá thời gian chờ ACK từ thiết bị: {exc}") from exc
         return True
 
     def close(self):

@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from smart_hub.audio import AlsaCapture, RATE, pcm_stats
 from smart_hub.config import load_config
+from smart_hub.locks import audio_lock, ResourceBusyError
 from smart_hub.child_study import (
     NEGATIVE_PRESETS,
     create_label_entry,
@@ -265,78 +266,90 @@ def main():
     )
 
     try:
-        with tempfile.TemporaryDirectory(prefix="smart-hub-cue-") as cue_directory:
-            cue_path = Path(cue_directory) / "cue.wav"
-            count = round(RATE * 0.12)
-            values = array(
-                "h",
-                (
-                    round(5000 * math.sin(2 * math.pi * 880 * i / RATE) * min(1, i / 160, (count - 1 - i) / 160))
-                    for i in range(count)
-                ),
-            )
-            if sys.byteorder != "little":
-                values.byteswap()
-            write_wav(cue_path, values.tobytes())
+        with audio_lock(timeout=0.0):
+            with tempfile.TemporaryDirectory(prefix="smart-hub-cue-") as cue_directory:
+                cue_path = Path(cue_directory) / "cue.wav"
+                count = round(RATE * 0.12)
+                values = array(
+                    "h",
+                    (
+                        round(5000 * math.sin(2 * math.pi * 880 * i / RATE) * min(1, i / 160, (count - 1 - i) / 160))
+                        for i in range(count)
+                    ),
+                )
+                if sys.byteorder != "little":
+                    values.byteswap()
+                write_wav(cue_path, values.tobytes())
 
-            print("[PREPARE] Ổn định mic; chuẩn bị sẵn sàng...", flush=True)
-            with AlsaCapture(config.device) as capture:
-                # ~2.5 seconds mic stabilization
-                for _ in range(5 * 25):
-                    capture.read_frame()
-
-                for take in range(1, args.takes + 1):
-                    if args.manual_advance:
-                        input(
-                            f"\n[READY {take}/{args.takes}] Bé/Người nói chuẩn bị nói '{phrase}'. Nhấn Enter để bắt đầu tiếng tít..."
-                        )
-
-                    print(f"\n[CUE {take}/{args.takes}] Sau tiếng tít, nói ‘{phrase}’ một lần duy nhất.", flush=True)
-                    with subprocess.Popen(
-                        ["aplay", "-q", "-D", config.playback_device, str(cue_path)],
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.PIPE,
-                    ) as player:
-                        started = time.monotonic()
-                        while player.poll() is None:
-                            capture.read_frame()
-                            if time.monotonic() - started > 3:
-                                player.kill()
-                                raise RuntimeError("Tiếng tít không phát xong; đã dừng thu.")
-                        if player.returncode:
-                            raise RuntimeError(player.stderr.read().decode(errors="replace"))
-
-                    # Tail protection: drop trailing cue echo (0.1s = 5 frames)
-                    for _ in range(5):
+                print("[PREPARE] Ổn định mic; chuẩn bị sẵn sàng...", flush=True)
+                with AlsaCapture(config.device) as capture:
+                    # ~2.5 seconds mic stabilization
+                    for _ in range(5 * 25):
                         capture.read_frame()
 
-                    recorded_at = datetime.now().astimezone().isoformat()
-                    # Capture exactly 5.0 seconds (250 frames of 20 ms)
-                    pcm = b"".join(capture.read_frame() for _ in range(5 * 50))
-                    name = f"take-{take:02d}.wav"
-                    path = directory / name
-                    write_wav(path, pcm)
-                    stats = pcm_stats(pcm)
-                    manifest["clips"].append({
-                        "file": name,
-                        "recorded_at": recorded_at,
-                        "stats": stats,
-                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                    })
-                    save()
-                    print(
-                        f"[SAVED {take}/{args.takes}] {name} (5s); peak={stats['peak']}; rms={stats['rms']}; clipping={stats['clipped_percent']}%",
-                        flush=True,
-                    )
+                    for take in range(1, args.takes + 1):
+                        if args.manual_advance:
+                            input(
+                                f"\n[READY {take}/{args.takes}] Bé/Người nói chuẩn bị nói '{phrase}'. Nhấn Enter để bắt đầu tiếng tít..."
+                            )
 
-                    if stats["clipped_percent"] > 1:
-                        raise RuntimeError("Audio clipping > 1%; dừng để kiểm tra gain, không tự thay đổi gain.")
+                        print(f"\n[CUE {take}/{args.takes}] Sau tiếng tít, nói ‘{phrase}’ một lần duy nhất.", flush=True)
+                        with subprocess.Popen(
+                            ["aplay", "-q", "-D", config.playback_device, str(cue_path)],
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                        ) as player:
+                            started = time.monotonic()
+                            while player.poll() is None:
+                                capture.read_frame()
+                                if time.monotonic() - started > 3:
+                                    player.kill()
+                                    raise RuntimeError("Tiếng tít không phát xong; đã dừng thu.")
+                            if player.returncode:
+                                raise RuntimeError(player.stderr.read().decode(errors="replace"))
 
-                    if take < args.takes and not args.manual_advance:
-                        for _ in range(75):
+                        # Tail protection: drop trailing cue echo (0.1s = 5 frames)
+                        for _ in range(5):
                             capture.read_frame()
 
+                        recorded_at = datetime.now().astimezone().isoformat()
+                        # Capture exactly 5.0 seconds (250 frames of 20 ms)
+                        pcm = b"".join(capture.read_frame() for _ in range(5 * 50))
+                        name = f"take-{take:02d}.wav"
+                        path = directory / name
+                        write_wav(path, pcm)
+                        stats = pcm_stats(pcm)
+                        manifest["clips"].append({
+                            "file": name,
+                            "recorded_at": recorded_at,
+                            "stats": stats,
+                            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        })
+                        save()
+                        print(
+                            f"[SAVED {take}/{args.takes}] {name} (5s); peak={stats['peak']}; rms={stats['rms']}; clipping={stats['clipped_percent']}%",
+                            flush=True,
+                        )
+
+                        if stats["clipped_percent"] > 1:
+                            raise RuntimeError("Audio clipping > 1%; dừng để kiểm tra gain, không tự thay đổi gain.")
+
+                        if take < args.takes and not args.manual_advance:
+                            for _ in range(75):
+                                capture.read_frame()
+
+    except ResourceBusyError as exc:
+        manifest["status"] = "interrupted"
+        manifest["error"] = f"Microphone đang bận: {exc}"
+        save()
+        print(
+            f"\n[ERROR] Microphone đang được sử dụng bởi tiến trình khác (dashboard/runtime): {exc}.\n"
+            f"Vui lòng đợi phiên hiện tại kết thúc hoặc dừng tiến trình đang giữ mic.",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(1)
     except KeyboardInterrupt:
         manifest["status"] = "interrupted"
         save()

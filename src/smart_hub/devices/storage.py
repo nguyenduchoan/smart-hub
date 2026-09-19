@@ -30,7 +30,6 @@ class DeviceStorage:
         self.db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
         self._ensure_db_dir()
         self._init_db()
-        self.recover_interrupted_commands()
 
     def _ensure_db_dir(self):
         old_umask = os.umask(0o077)
@@ -379,9 +378,22 @@ class DeviceStorage:
             return [self._row_to_code_revision(r) for r in rows]
 
     def get_active_code_revision(self, appliance_id: str, button_key: str) -> Optional[CodeRevision]:
-        """Get the latest revision for a button on an appliance."""
+        """Get the active code revision for a button. Prioritizes verified revisions (R13)."""
         with self._get_connection() as conn:
+            # 1. First look for verified revisions (active binding)
             row = conn.execute(
+                """
+                SELECT * FROM code_revisions
+                WHERE appliance_id = ? AND button_key = ? AND is_verified = 1
+                ORDER BY revision_number DESC, created_at DESC LIMIT 1
+                """,
+                (appliance_id, button_key),
+            ).fetchone()
+            if row:
+                return self._row_to_code_revision(row)
+
+            # 2. If no verified revision exists yet, fallback to latest initial revision
+            row_unverified = conn.execute(
                 """
                 SELECT * FROM code_revisions
                 WHERE appliance_id = ? AND button_key = ?
@@ -389,9 +401,10 @@ class DeviceStorage:
                 """,
                 (appliance_id, button_key),
             ).fetchone()
-            if not row:
-                return None
-            return self._row_to_code_revision(row)
+            if row_unverified:
+                return self._row_to_code_revision(row_unverified)
+
+            return None
 
     def verify_code_revision(self, rev_id: str, is_verified: bool = True):
         with self._get_connection() as conn:

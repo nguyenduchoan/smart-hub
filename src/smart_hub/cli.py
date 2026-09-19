@@ -435,8 +435,18 @@ def main(argv=None):
             status("[PASS] Đã phát file phản hồi; cần người nghe xác nhận đầu ra loa.")
             return 0
         if args.command == "dashboard":
+            import os
             from .dashboard.app import create_app
             import uvicorn
+            if args.audio_python:
+                audio_py_path = Path(args.audio_python).resolve()
+                if not audio_py_path.is_file() or not os.access(audio_py_path, os.X_OK):
+                    status(f"[FAIL] Interpreter --audio-python không hợp lệ hoặc không có quyền thực thi: {args.audio_python}")
+                    return 1
+                os.environ["SMART_HUB_AUDIO_PYTHON"] = str(audio_py_path)
+            elif (ROOT / ".venv" / "bin" / "python").exists():
+                os.environ.setdefault("SMART_HUB_AUDIO_PYTHON", str((ROOT / ".venv" / "bin" / "python").resolve()))
+
             allowed_hosts = {args.host, "localhost", "127.0.0.1", "::1", "testserver"}
             app = create_app(allowed_hosts=allowed_hosts)
             status(f"[DASHBOARD] Khởi chạy tại http://{args.host}:{args.port}")

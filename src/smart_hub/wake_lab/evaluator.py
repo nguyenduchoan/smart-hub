@@ -2,7 +2,10 @@
 from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any, Dict, List, Optional
 import uuid
 
@@ -11,12 +14,12 @@ from ..child_study import (
     LABELS_FILE,
     filter_samples,
     load_labels,
-    evaluate_dataset,
     format_evaluation_markdown,
 )
 from ..config import ROOT
 from ..locks import eval_lock, ResourceBusyError
 from .registry import WakeCandidate, WakeEngine, WakeRegistry
+from .worker import run_candidate_evaluation
 
 
 class EvaluationError(Exception):
@@ -24,8 +27,53 @@ class EvaluationError(Exception):
 
 
 class WakeEvaluator:
-    def __init__(self, registry: Optional[WakeRegistry] = None):
+    def __init__(self, registry: Optional[WakeRegistry] = None, audio_python: Optional[str] = None):
         self.registry = registry or WakeRegistry()
+        if audio_python:
+            self.audio_python = str(Path(audio_python).resolve())
+        elif os.environ.get("SMART_HUB_AUDIO_PYTHON"):
+            self.audio_python = str(Path(os.environ["SMART_HUB_AUDIO_PYTHON"]).resolve())
+        elif (ROOT / ".venv" / "bin" / "python").exists():
+            self.audio_python = str((ROOT / ".venv" / "bin" / "python").resolve())
+        else:
+            self.audio_python = sys.executable
+
+    def _preflight_audio_python(self, root: Path):
+        """R17: Preflight verification for audio worker interpreter."""
+        py_path = Path(self.audio_python)
+        if not py_path.is_file():
+            raise EvaluationError(
+                f"Audio Python interpreter không tồn tại: '{self.audio_python}'. "
+                f"Vui lòng cấu hình đúng đường dẫn qua --audio-python hoặc SMART_HUB_AUDIO_PYTHON."
+            )
+        if not os.access(self.audio_python, os.X_OK):
+            raise EvaluationError(f"Audio Python interpreter không có quyền thực thi: '{self.audio_python}'.")
+
+        # In mock hardware mode, skip dependency checks
+        if os.environ.get("SMART_HUB_MOCK_HARDWARE") == "1":
+            return
+
+        cmd = [self.audio_python, "-m", "smart_hub.wake_lab.worker"]
+        payload = json.dumps({"preflight_check_only": True})
+        env = dict(os.environ, PYTHONPATH=f"{root / 'src'}:{os.environ.get('PYTHONPATH', '')}")
+        try:
+            res = subprocess.run(
+                cmd,
+                input=payload,
+                capture_output=True,
+                text=True,
+                cwd=str(root),
+                env=env,
+                timeout=10.0,
+            )
+        except Exception as exc:
+            raise EvaluationError(f"Không thể khởi chạy worker preflight check: {exc}")
+
+        if res.returncode != 0:
+            err = res.stderr.strip() or res.stdout.strip()
+            raise EvaluationError(
+                f"Audio Python environment '{self.audio_python}' không đạt preflight (thiếu numpy/sherpa-onnx/model): {err}"
+            )
 
     def run_evaluation(
         self,
@@ -90,26 +138,61 @@ class WakeEvaluator:
         eval_id = f"eval_{uuid.uuid4().hex[:10]}"
         eval_name = name.strip() or f"Đánh giá {split} ({mode}) - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
-        # Group profiles and aliases to run
-        profiles = []
-        aliases = []
-        for cand in candidates:
-            profiles.append(cand.profile)
-            if cand.alias_config and "aliases" in cand.alias_config:
-                aliases.extend(cand.alias_config["aliases"])
-
-        profiles = tuple(dict.fromkeys(profiles))  # deduplicate preserving order
-        aliases = tuple(dict.fromkeys(aliases))
-
-        # Run evaluation using child_study.evaluate_dataset
-        eval_data = evaluate_dataset(
-            eligible_samples,
-            profiles=profiles,
-            aliases=aliases,
-            split=split,
-            evaluation_mode=mode,
-            root=root,
+        # In mock hardware mode, prefer in-process execution to allow unit testing without spawning audio subprocess
+        is_mock = os.environ.get("SMART_HUB_MOCK_HARDWARE") == "1"
+        needs_subprocess = not is_mock and (
+            self.audio_python != sys.executable
+            or "numpy" not in sys.modules
         )
+
+        # Check if numpy can be imported in current process
+        if needs_subprocess:
+            try:
+                import numpy  # noqa: F401
+                needs_subprocess = (self.audio_python != sys.executable)
+            except ImportError:
+                needs_subprocess = True
+
+        worker_script = str(Path(__file__).parent / "worker.py")
+
+        if needs_subprocess:
+            self._preflight_audio_python(root)
+            payload = json.dumps({
+                "eligible_samples": eligible_samples,
+                "candidates": [c.to_dict() for c in candidates],
+                "split": split,
+                "mode": mode,
+                "root": str(root),
+            }, ensure_ascii=False)
+            env = dict(os.environ, PYTHONPATH=f"{root / 'src'}:{os.environ.get('PYTHONPATH', '')}")
+            proc = subprocess.run(
+                [self.audio_python, worker_script],
+                input=payload,
+                capture_output=True,
+                text=True,
+                cwd=str(root),
+                env=env,
+                timeout=300.0,
+            )
+            if proc.returncode != 0:
+                err = proc.stderr.strip() or proc.stdout.strip()
+                raise EvaluationError(f"Worker audio evaluation thất bại: {err}")
+            try:
+                resp = json.loads(proc.stdout)
+            except Exception as exc:
+                raise EvaluationError(f"Không thể giải mã kết quả từ audio worker: {exc}")
+            if resp.get("status") != "ok":
+                raise EvaluationError(resp.get("error", "Lỗi worker không xác định"))
+            eval_data = resp["eval_data"]
+        else:
+            # R08: In-process independent candidate evaluation
+            eval_data = run_candidate_evaluation(
+                eligible_samples=eligible_samples,
+                candidates_data=[c.to_dict() for c in candidates],
+                split=split,
+                mode=mode,
+                root=root,
+            )
 
         md_report = format_evaluation_markdown(eval_data)
         results_json_str = json.dumps(eval_data, ensure_ascii=False, indent=2)

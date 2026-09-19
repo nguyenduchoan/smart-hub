@@ -1,7 +1,7 @@
-"""Child-study samples browsing, streaming, and manual review endpoints."""
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import wave
 from fastapi import APIRouter, HTTPException, Response, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -15,7 +15,7 @@ from ...child_study import (
     load_sessions,
     save_label,
 )
-from ...config import ROOT
+from ...config import ROOT, load_config
 from ...locks import dataset_lock
 
 router = APIRouter(prefix="/api/samples", tags=["Samples & Review"])
@@ -138,11 +138,46 @@ def review_sample(sample_id: str, req: ReviewSampleRequest):
                     detail=f"Trạng thái mẫu đã bị thay đổi bởi thao tác khác (hiện tại: {target.get('review_status')}). Vui lòng tải lại.",
                 )
 
+            # R09: Technical QC verification if status is accepted
+            if req.review_status == "accepted":
+                audio_path = _resolve_audio_path(target.get("source", ""))
+                # Verify SHA256 checksum
+                actual_sha = compute_file_sha256(audio_path)
+                expected_sha = target.get("source_sha256")
+                if expected_sha and actual_sha != expected_sha:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=f"File audio bị thay đổi checksum SHA256 (kỳ vọng {expected_sha[:8]}, thực tế {actual_sha[:8]}).",
+                    )
+                # Verify WAV headers: 16kHz, mono (1 channel), 16-bit (2 bytes)
+                try:
+                    with wave.open(str(audio_path), "rb") as wf:
+                        channels = wf.getnchannels()
+                        rate = wf.getframerate()
+                        sampwidth = wf.getsampwidth()
+                        if channels != 1 or rate != 16000 or sampwidth != 2:
+                            raise HTTPException(
+                                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                detail=f"Audio không đạt chuẩn QC (cần 16kHz mono 16-bit; thực tế {rate}Hz, {channels}ch, {sampwidth*8}bit).",
+                            )
+                except wave.Error as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=f"File WAV hỏng hoặc không đúng định dạng: {exc}",
+                    )
+
             # Perform update
             target["review_status"] = req.review_status
             target["speaker_confirmed"] = req.speaker_confirmed
-            if req.transcript_confirmed:
-                target["transcript_human"] = req.transcript_confirmed
+            if req.transcript_confirmed is not None:
+                new_transcript = req.transcript_confirmed.strip()
+                target["transcript_human"] = new_transcript
+                # Synchronize label and expected_events based on transcript vs configured wake word
+                cfg = load_config()
+                is_wake = new_transcript.lower() == cfg.wake_word.lower()
+                target["label"] = "positive" if is_wake else "negative"
+                target["expected_events"] = 1 if is_wake else 0
+
             target["reviewer"] = req.reviewer
             target["review_note"] = req.review_note
             target["reviewed_at"] = datetime.now().astimezone().isoformat()

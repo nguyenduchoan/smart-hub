@@ -26,9 +26,11 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 async def lifespan(app: FastAPI):
     storage = DeviceStorage()
     storage.recover_interrupted_commands()
-    if not storage.list_code_sets():
-        for cs in get_seed_code_sets():
-            storage.save_code_set(cs)
+    # R04: Do not seed synthetic dummy codes into production database unless mock hardware is active
+    if os.environ.get("SMART_HUB_MOCK_HARDWARE") == "1":
+        if not storage.list_code_sets():
+            for cs in get_seed_code_sets():
+                storage.save_code_set(cs)
     yield
 
 

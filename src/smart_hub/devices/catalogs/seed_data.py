@@ -60,11 +60,11 @@ def get_seed_code_sets() -> List[CodeSet]:
     }
 
     items = [
-        ("cs_daikin_climate_seed", ApplianceCategory.CLIMATE, "Daikin", ["FTKC25", "FTKC35", "FTV25", "Universal Inverter"], "Daikin Inverter AC Seed", daikin_codes),
-        ("cs_panasonic_tv_seed", ApplianceCategory.TV, "Panasonic", ["Viera Standard", "TH-43", "TH-55"], "Panasonic TV IR Seed", panasonic_tv_codes),
-        ("cs_senko_fan_seed", ApplianceCategory.FAN, "Senko", ["DR1604", "TR1628", "Universal Remote Fan"], "Senko Fan Remote Seed", senko_fan_codes),
-        ("cs_casper_ac_seed", ApplianceCategory.CLIMATE, "Casper", ["TC-09IS33", "SC-09TL32", "Inverter 1HP-1.5HP"], "Casper AC IR Seed", casper_ac_codes),
-        ("cs_samsung_tv_seed", ApplianceCategory.TV, "Samsung", ["Smart TV AU7000", "QLED Q60", "Universal BN59"], "Samsung TV IR Seed", samsung_tv_codes),
+        ("cs_daikin_climate_seed", ApplianceCategory.CLIMATE, "Daikin", ["FTKC25", "FTKC35", "FTV25", "Universal Inverter"], "[MOCK/CHƯA KIỂM CHỨNG] Daikin Inverter AC Seed", daikin_codes),
+        ("cs_panasonic_tv_seed", ApplianceCategory.TV, "Panasonic", ["Viera Standard", "TH-43", "TH-55"], "[MOCK/CHƯA KIỂM CHỨNG] Panasonic TV IR Seed", panasonic_tv_codes),
+        ("cs_senko_fan_seed", ApplianceCategory.FAN, "Senko", ["DR1604", "TR1628", "Universal Remote Fan"], "[MOCK/CHƯA KIỂM CHỨNG] Senko Fan Remote Seed", senko_fan_codes),
+        ("cs_casper_ac_seed", ApplianceCategory.CLIMATE, "Casper", ["TC-09IS33", "SC-09TL32", "Inverter 1HP-1.5HP"], "[MOCK/CHƯA KIỂM CHỨNG] Casper AC IR Seed", casper_ac_codes),
+        ("cs_samsung_tv_seed", ApplianceCategory.TV, "Samsung", ["Smart TV AU7000", "QLED Q60", "Universal BN59"], "[MOCK/CHƯA KIỂM CHỨNG] Samsung TV IR Seed", samsung_tv_codes),
     ]
 
     result = []
@@ -79,7 +79,7 @@ def get_seed_code_sets() -> List[CodeSet]:
                 source_name=name,
                 source_url="smart_hub/devices/catalogs/seed_data.py",
                 source_revision="seed_v1",
-                license="Local Seed (Public IR codes)",
+                license="Mock Synthetic Payload (Unverified)",
                 encoding="broadlink_base64",
                 hash=hash_val,
                 codes=codes,

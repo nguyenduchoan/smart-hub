@@ -231,6 +231,71 @@ class WakeRegistry:
                 for r in rows
             ]
 
+    def save_artifact(self, artifact: ModelArtifact):
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO wake_artifacts
+                (id, engine, name, files, total_size_bytes, content_hash, phrase, language, source, license, compatibility_status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    artifact.id,
+                    artifact.engine.value if hasattr(artifact.engine, "value") else str(artifact.engine),
+                    artifact.name,
+                    json.dumps(artifact.files, ensure_ascii=False),
+                    artifact.total_size_bytes,
+                    artifact.content_hash,
+                    artifact.phrase,
+                    artifact.language,
+                    artifact.source,
+                    artifact.license,
+                    artifact.compatibility_status,
+                    artifact.created_at,
+                ),
+            )
+
+    def get_artifact(self, artifact_id: str) -> Optional[ModelArtifact]:
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT * FROM wake_artifacts WHERE id = ?", (artifact_id,)).fetchone()
+            if not row:
+                return None
+            return ModelArtifact(
+                id=row["id"],
+                engine=WakeEngine(row["engine"]),
+                name=row["name"],
+                files=json.loads(row["files"]),
+                total_size_bytes=row["total_size_bytes"],
+                content_hash=row["content_hash"],
+                phrase=row["phrase"],
+                language=row["language"],
+                source=row["source"],
+                license=row["license"],
+                compatibility_status=row["compatibility_status"],
+                created_at=row["created_at"],
+            )
+
+    def list_artifacts(self) -> List[ModelArtifact]:
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT * FROM wake_artifacts ORDER BY created_at DESC").fetchall()
+            return [
+                ModelArtifact(
+                    id=r["id"],
+                    engine=WakeEngine(r["engine"]),
+                    name=r["name"],
+                    files=json.loads(r["files"]),
+                    total_size_bytes=r["total_size_bytes"],
+                    content_hash=r["content_hash"],
+                    phrase=r["phrase"],
+                    language=r["language"],
+                    source=r["source"],
+                    license=r["license"],
+                    compatibility_status=r["compatibility_status"],
+                    created_at=r["created_at"],
+                )
+                for r in rows
+            ]
+
     def save_evaluation(self, eval_id: str, name: str, candidate_ids: List[str], split: str, mode: str,
                         snapshot_hash: str, sample_count: int, results_json: str, report_md: str):
         with self._get_connection() as conn:

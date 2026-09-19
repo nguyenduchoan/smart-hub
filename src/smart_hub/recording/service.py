@@ -2,6 +2,7 @@
 Shared between CLI and web dashboard.
 """
 from array import array
+import contextlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -260,19 +261,6 @@ class RecordingService:
 
     def _run_session_worker(self):
         try:
-            # 1. Warmup and stabilize mic
-            if not self.session_config.mock:
-                try:
-                    with AlsaCapture(self.audio_device) as capture:
-                        for _ in range(5 * 25):  # ~2.5s
-                            if self._stop_event.is_set():
-                                break
-                            capture.read_frame()
-                except Exception as exc:
-                    raise AudioError(f"Không thể mở microphone '{self.audio_device}': {exc}")
-            else:
-                time.sleep(0.5)
-
             # Loop through takes
             for take in range(1, self.session_config.takes_planned + 1):
                 if self._stop_event.is_set():
@@ -290,18 +278,25 @@ class RecordingService:
                     if self._stop_event.is_set():
                         break
 
-                # Play Cue
-                with self._lock:
-                    self.state = RecordingState.CUE
-                self._play_cue_tone()
+                # R05: Open capture BEFORE playing cue so DC warmup is completed before cue
+                if not self.session_config.mock:
+                    take_capture_cm = AlsaCapture(self.audio_device, warmup_seconds=0.5)
+                else:
+                    take_capture_cm = contextlib.nullcontext()
 
-                if self._stop_event.is_set():
-                    break
+                with take_capture_cm as capture:
+                    # Play Cue while draining capture
+                    with self._lock:
+                        self.state = RecordingState.CUE
+                    self._play_cue_tone(capture=capture)
 
-                # Record 5.0 seconds
-                with self._lock:
-                    self.state = RecordingState.RECORDING
-                pcm = self._record_pcm(5.0)
+                    if self._stop_event.is_set():
+                        break
+
+                    # Record exact 5.0 seconds
+                    with self._lock:
+                        self.state = RecordingState.RECORDING
+                    pcm = self._record_pcm(5.0, capture=capture)
 
                 # Process & Save
                 with self._lock:
@@ -370,7 +365,7 @@ class RecordingService:
                 self._audio_res_lock.release()
                 self._audio_res_lock = None
 
-    def _play_cue_tone(self):
+    def _play_cue_tone(self, capture=None):
         if self.session_config.mock:
             time.sleep(0.1)
             return
@@ -398,7 +393,12 @@ class RecordingService:
             except Exception:
                 pass
 
-    def _record_pcm(self, seconds: float) -> bytes:
+        if capture is not None:
+            time.sleep(0.05)
+            if hasattr(capture, "drain"):
+                capture.drain()
+
+    def _record_pcm(self, seconds: float, capture=None) -> bytes:
         if self.session_config.mock:
             time.sleep(0.3)
             # Return synthetic 16-bit mono 16kHz audio with moderate RMS and zero clipping
@@ -408,13 +408,19 @@ class RecordingService:
                 values.byteswap()
             return values.tobytes()
 
-        with AlsaCapture(self.audio_device) as capture:
-            # Drop trailing cue echo (5 frames = 0.1s)
-            for _ in range(5):
-                capture.read_frame()
-            # Capture exact seconds
+        if capture is not None:
+            if hasattr(capture, "drain"):
+                capture.drain()
             frames_needed = math.ceil(seconds * 50)
             return b"".join(capture.read_frame() for _ in range(frames_needed))
+
+        with AlsaCapture(self.audio_device) as cap:
+            # Drop trailing cue echo (5 frames = 0.1s)
+            for _ in range(5):
+                cap.read_frame()
+            # Capture exact seconds
+            frames_needed = math.ceil(seconds * 50)
+            return b"".join(cap.read_frame() for _ in range(frames_needed))
 
     @staticmethod
     def _write_wav(path: Path, pcm: bytes):

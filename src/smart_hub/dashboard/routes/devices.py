@@ -34,7 +34,10 @@ def get_provider():
         return MockDeviceProvider()
     provider = BroadlinkProvider()
     if not provider.is_available():
-        return MockDeviceProvider()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Broadlink SDK (python-broadlink) is not available. Please install python-broadlink or enable SMART_HUB_MOCK_HARDWARE=1 for simulation mode.",
+        )
     return provider
 
 
