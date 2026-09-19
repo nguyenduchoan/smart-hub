@@ -931,11 +931,20 @@ function renderStudioClips(clips) {
 
 document.getElementById('btn-advance-take')?.addEventListener('click', async () => {
   try {
-    const payload = {};
-    if (currentRecordingStatus) {
-      if (currentRecordingStatus.session_id) payload.session_id = currentRecordingStatus.session_id;
-      if (typeof currentRecordingStatus.current_take === 'number') payload.take_sequence = currentRecordingStatus.current_take;
+    if (
+      !currentRecordingStatus ||
+      currentRecordingStatus.state !== 'waiting_user' ||
+      !currentRecordingStatus.session_id ||
+      typeof currentRecordingStatus.current_take !== 'number' ||
+      currentRecordingStatus.current_take <= 0
+    ) {
+      showToast('Chỉ có thể bấm lượt tiếp theo khi phiên đang ở trạng thái chờ người dùng (waiting_user).', 'error');
+      return;
     }
+    const payload = {
+      session_id: currentRecordingStatus.session_id,
+      take_sequence: currentRecordingStatus.current_take,
+    };
     await apiFetch('/api/recording/advance', { method: 'POST', body: payload });
   } catch (err) {
     showToast(`Lỗi: ${err.message}`, 'error');

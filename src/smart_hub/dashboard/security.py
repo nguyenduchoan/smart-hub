@@ -55,7 +55,7 @@ def extract_hostname(netloc_or_host: str) -> str:
     if not val:
         return ""
     parsed = urlparse(val if "://" in val else f"//{val}")
-    return (parsed.hostname or val).strip()
+    return (parsed.hostname or val).strip().lower()
 
 
 def is_allowed_host(hostname: str, allowed_hosts: Set[str]) -> bool:
@@ -87,52 +87,62 @@ class HostOriginSecurityMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         # 1. Host validation
-        host_header = request.headers.get("host", "")
-        if host_header:
-            hostname = extract_hostname(host_header)
-            if not is_allowed_host(hostname, self.allowed_hosts):
+        host_header = request.headers.get("host", "").strip()
+        if not host_header:
+            host_header = request.url.netloc or ""
+
+        parsed_host = urlparse(f"//{host_header}") if host_header else None
+        req_hostname = (parsed_host.hostname if parsed_host and parsed_host.hostname else extract_hostname(host_header)).lower().strip()
+        req_scheme = (request.url.scheme or "http").lower().strip()
+
+        if parsed_host and parsed_host.port is not None:
+            req_effective_port = parsed_host.port
+        elif request.url.port is not None:
+            req_effective_port = request.url.port
+        else:
+            req_effective_port = 443 if req_scheme == "https" else 80
+
+        if req_hostname:
+            if not is_allowed_host(req_hostname, self.allowed_hosts):
                 return Response(
                     content=f"Host '{host_header}' is not allowed. Dashboard is strictly bound to local loopback.",
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
 
-        # 2. Origin validation on state-changing requests
+        # 2. Origin validation on state-changing requests (strict same-origin: V3-06)
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("origin")
             if origin:
-                parsed_origin = urlparse(origin)
-                origin_host = extract_hostname(origin)
-                if not is_allowed_host(origin_host, self.allowed_hosts):
+                parsed_origin = urlparse(origin.strip())
+                origin_scheme = (parsed_origin.scheme or "").lower().strip()
+                origin_hostname = (parsed_origin.hostname or extract_hostname(origin)).lower().strip()
+
+                if not is_allowed_host(origin_hostname, self.allowed_hosts):
                     return Response(
                         content=f"Origin '{origin}' is forbidden.",
                         status_code=status.HTTP_403_FORBIDDEN,
                     )
 
-                # V2-16: Strict scheme and port matching
-                # Skip port matching only if Host is literal testserver without port
-                parsed_host = urlparse(f"//{host_header}") if host_header else None
-                expected_port = None
-                if parsed_host and parsed_host.port is not None:
-                    expected_port = parsed_host.port
-                elif request.url.port is not None:
-                    expected_port = request.url.port
-
-                origin_port = parsed_origin.port
-                if origin_port is None and parsed_origin.scheme:
-                    origin_port = 443 if parsed_origin.scheme.lower() == "https" else 80
-
-                if expected_port is not None and origin_port is not None:
-                    if origin_port != expected_port:
-                        return Response(
-                            content=f"Origin '{origin}' port ({origin_port}) does not match server port ({expected_port}).",
-                            status_code=status.HTTP_403_FORBIDDEN,
-                        )
+                origin_effective_port = parsed_origin.port if parsed_origin.port is not None else (443 if origin_scheme == "https" else 80)
 
                 # Scheme matching
-                expected_scheme = request.url.scheme or "http"
-                if parsed_origin.scheme and parsed_origin.scheme.lower() != expected_scheme.lower():
+                if origin_scheme != req_scheme:
                     return Response(
-                        content=f"Origin '{origin}' scheme does not match server scheme ({expected_scheme}).",
+                        content=f"Origin '{origin}' scheme does not match server scheme ({req_scheme}).",
+                        status_code=status.HTTP_403_FORBIDDEN,
+                    )
+
+                # Strict exact hostname matching (e.g. localhost != 127.0.0.1)
+                if origin_hostname != req_hostname:
+                    return Response(
+                        content=f"Origin '{origin}' hostname ('{origin_hostname}') does not match request host ('{req_hostname}'). Strict same-origin required.",
+                        status_code=status.HTTP_403_FORBIDDEN,
+                    )
+
+                # Effective port matching
+                if origin_effective_port != req_effective_port:
+                    return Response(
+                        content=f"Origin '{origin}' effective port ({origin_effective_port}) does not match server port ({req_effective_port}).",
                         status_code=status.HTTP_403_FORBIDDEN,
                     )
 

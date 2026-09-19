@@ -81,6 +81,7 @@ class CodeRevision:
     revision_number: int = 1
     is_verified: bool = False
     created_at: str = field(default_factory=lambda: datetime.now().astimezone().isoformat())
+    is_mock_seed: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -104,6 +105,7 @@ class CodeSet:
     hash: str
     created_at: str = field(default_factory=lambda: datetime.now().astimezone().isoformat())
     codes: Dict[str, str] = field(default_factory=dict)  # button_key -> base64 payload
+    is_quarantined: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -220,3 +222,23 @@ class BaseDeviceProvider(ABC):
     def close(self):
         """Clean up provider resources."""
         pass
+
+
+class ProviderUnavailableError(RuntimeError):
+    """Raised when provider driver/SDK is not installed or unavailable."""
+    pass
+
+
+class UnsupportedProviderError(ValueError):
+    """Raised when gateway specifies an unsupported or unknown provider."""
+    pass
+
+
+class ProviderCapabilityError(ValueError):
+    """Raised when an action is requested that the provider does not support."""
+    pass
+
+
+class LedgerConflictError(ValueError):
+    """Raised when request_id is reused with different payload digest or binding."""
+    pass

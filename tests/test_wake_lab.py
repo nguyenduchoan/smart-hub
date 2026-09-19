@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from smart_hub.config import ROOT
-from smart_hub.child_study import ChildStudyDataError
+from smart_hub.child_study import ChildStudyDataError, format_evaluation_markdown
 from smart_hub.wake_lab import (
     EvaluationError,
     WakeCandidate,
@@ -17,6 +17,7 @@ from smart_hub.wake_lab import (
     WakeRegistry,
     create_candidate_from_samples,
 )
+from smart_hub.wake_lab.worker import run_candidate_evaluation
 
 
 try:
@@ -504,6 +505,329 @@ class WakeLabTests(unittest.TestCase):
             with self.assertRaises(EvaluationError) as ctx:
                 evaluator.run_evaluation(["cand_mock_test"], split="dev", mode="official")
             self.assertIn("mock synthetic", str(ctx.exception))
+
+    @unittest.skipUnless(HAS_NUMPY, "numpy required for DTW evaluation tests")
+    def test_v3_02_dtw_missing_corrupt_wav_and_sha_mismatch_fail_closed(self):
+        # 1. Setup a valid DTW candidate artifact
+        with mock.patch("smart_hub.wake_lab.enrollment.load_labels") as mock_labels:
+            mock_labels.return_value = [
+                {
+                    "sample_id": "child_dev_ref_v3",
+                    "split": "dev",
+                    "review_status": "accepted",
+                    "speaker_confirmed": True,
+                    "source": self.test_wav_rel,
+                    "source_sha256": self.test_wav_sha,
+                }
+            ]
+            cand_base = create_candidate_from_samples(
+                name="DTW Evaluator Cand",
+                sample_ids=["child_dev_ref_v3"],
+                engine=WakeEngine.DTW,
+                threshold=0.3,
+                registry=self.registry,
+                root=Path(self.tmp_dir.name),
+            )
+        art = self.registry.get_artifact(cand_base.model_id)
+        art_rel = art.files[0]
+        cand_data = {
+            "id": "cand_eval_test",
+            "name": "DTW Evaluator Cand",
+            "engine": "dtw",
+            "threshold": 0.3,
+            "artifact_file": art_rel,
+        }
+
+        # Create a corrupt WAV file
+        corrupt_wav_path = Path(self.tmp_dir.name) / "corrupt.wav"
+        corrupt_wav_path.write_bytes(b"NOT_A_VALID_WAV_HEADER_DATA_123456789")
+        corrupt_wav_sha = hashlib.sha256(corrupt_wav_path.read_bytes()).hexdigest()
+
+        # Create a non-standard WAV (e.g. 8kHz rate)
+        bad_rate_wav_path = Path(self.tmp_dir.name) / "bad_rate.wav"
+        import wave
+        with wave.open(str(bad_rate_wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(8000)
+            wf.writeframes(b"\x00\x00" * 800)
+        bad_rate_sha = hashlib.sha256(bad_rate_wav_path.read_bytes()).hexdigest()
+
+        # Test samples covering all fail-closed error conditions
+        eligible_samples = [
+            {
+                "sample_id": "s_missing_pos",
+                "source": "nonexistent_pos.wav",
+                "source_sha256": "fake_sha_1",
+                "label": "positive",
+                "expected_events": 1,
+            },
+            {
+                "sample_id": "s_missing_neg",
+                "source": "nonexistent_neg.wav",
+                "source_sha256": "fake_sha_2",
+                "label": "negative",
+                "expected_events": 0,
+            },
+            {
+                "sample_id": "s_sha_mismatch_pos",
+                "source": self.test_wav_rel,
+                "source_sha256": "wrong_sha_for_pos",
+                "label": "positive",
+                "expected_events": 1,
+            },
+            {
+                "sample_id": "s_sha_mismatch_neg",
+                "source": self.test_wav_rel,
+                "source_sha256": "wrong_sha_for_neg",
+                "label": "negative",
+                "expected_events": 0,
+            },
+            {
+                "sample_id": "s_corrupt_pos",
+                "source": "corrupt.wav",
+                "source_sha256": corrupt_wav_sha,
+                "label": "positive",
+                "expected_events": 1,
+            },
+            {
+                "sample_id": "s_bad_rate_neg",
+                "source": "bad_rate.wav",
+                "source_sha256": bad_rate_sha,
+                "label": "negative",
+                "expected_events": 0,
+            },
+            {
+                "sample_id": "s_valid_pos",
+                "source": self.test_wav_rel,
+                "source_sha256": self.test_wav_sha,
+                "label": "positive",
+                "expected_events": 1,
+            },
+        ]
+
+        eval_res = run_candidate_evaluation(
+            eligible_samples=eligible_samples,
+            candidates_data=[cand_data],
+            split="dev",
+            mode="official",
+            root=Path(self.tmp_dir.name),
+        )
+
+        # Check overall status and error flag
+        self.assertEqual(eval_res["status"], "completed_with_errors")
+        self.assertTrue(eval_res["has_processing_errors"])
+        self.assertEqual(eval_res["eligible_total"], 7)
+
+        m = eval_res["metrics"]["DTW Evaluator Cand"]
+        self.assertEqual(m["eligible_total"], 7)
+        self.assertEqual(m["errors"], 6)
+        self.assertEqual(m["processed_total"], 1)
+        self.assertEqual(m["positive"]["errors"], 3)
+        self.assertEqual(m["positive"]["eligible"], 4)
+        self.assertEqual(m["positive"]["processed"], 1)
+        self.assertEqual(m["negative"]["errors"], 3)
+        self.assertEqual(m["negative"]["eligible"], 3)
+        self.assertEqual(m["negative"]["processed"], 0)
+
+        # Check sample-level evaluation errors
+        samples_eval = {s["sample_id"]: s["evaluations"]["DTW Evaluator Cand"] for s in eval_res["samples"]}
+        for err_sid in ["s_missing_pos", "s_missing_neg", "s_sha_mismatch_pos", "s_sha_mismatch_neg", "s_corrupt_pos", "s_bad_rate_neg"]:
+            sample_eval = samples_eval[err_sid]
+            self.assertEqual(sample_eval["status"], "ERROR", f"{err_sid} must have status ERROR")
+            self.assertEqual(sample_eval["outcome"], "ERROR", f"{err_sid} must have outcome ERROR")
+            self.assertFalse(sample_eval["is_success"])
+            self.assertIsNotNone(sample_eval["error"])
+
+        # Check valid sample
+        valid_eval = samples_eval["s_valid_pos"]
+        self.assertNotEqual(valid_eval["status"], "ERROR")
+        self.assertTrue(valid_eval["is_success"])
+
+    def test_v3_02_evaluation_reload_preserves_status_and_errors(self):
+        eval_id = "eval_round_3_test"
+        eval_data = {
+            "id": eval_id,
+            "status": "completed_with_errors",
+            "has_processing_errors": True,
+            "timestamp": "2026-09-19T21:00:00Z",
+            "split": "dev",
+            "evaluation_mode": "official",
+            "eligible_total": 10,
+            "total_samples": 10,
+            "profiles": ["test_cand"],
+            "metrics": {
+                "test_cand": {
+                    "engine": "dtw",
+                    "eligible_total": 10,
+                    "processed_total": 9,
+                    "errors": 1,
+                    "accuracy": 0.7,
+                    "precision": 0.8,
+                    "recall": 0.667,
+                    "f1": 0.727,
+                    "far": 0.25,
+                    "coverage": 0.9,
+                    "error_rate": 0.1,
+                }
+            },
+            "samples": [],
+        }
+        import json
+        self.registry.save_evaluation(
+            eval_id=eval_id,
+            name="Evaluation Round 3 Test",
+            candidate_ids=["test_cand"],
+            split="dev",
+            mode="official",
+            snapshot_hash="fake_snapshot_hash",
+            sample_count=10,
+            results_json=json.dumps(eval_data),
+            report_md="# Test Report",
+            status="completed_with_errors",
+        )
+
+        # Reload from registry
+        loaded = self.registry.get_evaluation(eval_id)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["status"], "completed_with_errors")
+        self.assertTrue(loaded["has_processing_errors"])
+
+        # Check list_evaluations
+        evals_list = self.registry.list_evaluations()
+        found = next((e for e in evals_list if e.get("id") == eval_id), None)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["status"], "completed_with_errors")
+        self.assertTrue(found["has_processing_errors"])
+
+    def test_v3_03_dtw_markdown_metrics_fixture_and_mixed_report(self):
+        # Fixture 1: positive error
+        # eligible=10, processed=9, errors=1, pos.eligible=6, pos.processed=5, pos.errors=1,
+        # neg.eligible=4, neg.processed=4, neg.errors=0, tp=4, fn=1, tn=3, fp=1
+        f1_data = {
+            "evaluation_mode": "official",
+            "split": "dev",
+            "timestamp": "2026-09-19T21:00:00Z",
+            "eligible_total": 10,
+            "status": "completed_with_errors",
+            "has_processing_errors": True,
+            "profiles": ["DTW Cand F1"],
+            "metrics": {
+                "DTW Cand F1": {
+                    "engine": "dtw",
+                    "eligible_total": 10,
+                    "processed_total": 9,
+                    "errors": 1,
+                    "tp": 4,
+                    "fn": 1,
+                    "tn": 3,
+                    "fp": 1,
+                    "accuracy": 7 / 10,  # 70.0%
+                    "precision": 4 / 5,  # 80.0%
+                    "recall": 4 / 6,  # 66.7%
+                    "f1": (2 * 0.8 * (4/6)) / (0.8 + (4/6)),  # 72.7%
+                    "far": 1 / 4,  # 25.0%
+                    "coverage": 9 / 10,  # 90.0%
+                    "error_rate": 1 / 10,  # 10.0%
+                    "positive": {"eligible": 6, "processed": 5, "errors": 1},
+                    "negative": {"eligible": 4, "processed": 4, "errors": 0},
+                }
+            },
+            "samples": [],
+        }
+        md_f1 = format_evaluation_markdown(f1_data)
+        self.assertIn("completed_with_errors", md_f1)
+        self.assertIn("70.0%", md_f1)  # accuracy
+        self.assertIn("80.0%", md_f1)  # precision
+        self.assertIn("66.7%", md_f1)  # recall
+        self.assertIn("72.7%", md_f1)  # F1
+        self.assertIn("25.0%", md_f1)  # FAR
+        self.assertIn("90.0%", md_f1)  # coverage
+        self.assertIn("10.0%", md_f1)  # error_rate
+        # Verify pure DTW does not render fake STT metrics
+        self.assertNotIn("RTF giải mã CPU", md_f1)
+        self.assertNotIn("Thời gian STT max", md_f1)
+
+        # Fixture 2: negative error
+        # eligible=10, processed=9, errors=1, pos.eligible=5, pos.processed=5, pos.errors=0,
+        # neg.eligible=5, neg.processed=4, neg.errors=1, tp=4, fn=1, tn=3, fp=1
+        f2_data = {
+            "evaluation_mode": "official",
+            "split": "dev",
+            "timestamp": "2026-09-19T21:00:00Z",
+            "eligible_total": 10,
+            "status": "completed_with_errors",
+            "has_processing_errors": True,
+            "profiles": ["DTW Cand F2"],
+            "metrics": {
+                "DTW Cand F2": {
+                    "engine": "dtw",
+                    "eligible_total": 10,
+                    "processed_total": 9,
+                    "errors": 1,
+                    "tp": 4,
+                    "fn": 1,
+                    "tn": 3,
+                    "fp": 1,
+                    "accuracy": 7 / 10,  # 70.0%
+                    "precision": 4 / 5,  # 80.0%
+                    "recall": 4 / 5,  # 80.0%
+                    "f1": 0.8,  # 80.0%
+                    "far": 1 / 5,  # 20.0%
+                    "coverage": 9 / 10,  # 90.0%
+                    "error_rate": 1 / 10,  # 10.0%
+                    "positive": {"eligible": 5, "processed": 5, "errors": 0},
+                    "negative": {"eligible": 5, "processed": 4, "errors": 1},
+                }
+            },
+            "samples": [],
+        }
+        md_f2 = format_evaluation_markdown(f2_data)
+        self.assertIn("80.0%", md_f2)  # recall
+        self.assertIn("20.0%", md_f2)  # FAR
+
+        # Mixed Report: both STT and DTW candidates
+        mixed_data = {
+            "evaluation_mode": "official",
+            "split": "dev",
+            "timestamp": "2026-09-19T21:00:00Z",
+            "eligible_total": 10,
+            "status": "completed",
+            "has_processing_errors": False,
+            "profiles": ["STT Cand", "DTW Cand"],
+            "metrics": {
+                "STT Cand": {
+                    "engine": "sherpa_onnx_stt",
+                    "positive": {"eligible": 5, "accurate": 5, "missed": 0, "duplicate": 0, "accurate_rate": 1.0, "frr": 0.0, "duplicate_rate": 0.0, "errors": 0},
+                    "negative": {"eligible": 5, "false_alarm": 0, "far": 0.0, "errors": 0},
+                    "performance": {"decode_rtf": 0.045, "max_decode_seconds": 0.120},
+                    "errors": 0,
+                },
+                "DTW Cand": {
+                    "engine": "dtw",
+                    "eligible_total": 10,
+                    "processed_total": 10,
+                    "errors": 0,
+                    "accuracy": 1.0,
+                    "precision": 1.0,
+                    "recall": 1.0,
+                    "f1": 1.0,
+                    "far": 0.0,
+                    "coverage": 1.0,
+                    "error_rate": 0.0,
+                    "tp": 5, "fn": 0, "tn": 5, "fp": 0,
+                    "positive": {"eligible": 5, "processed": 5, "errors": 0},
+                    "negative": {"eligible": 5, "processed": 5, "errors": 0},
+                }
+            },
+            "samples": [],
+        }
+        md_mixed = format_evaluation_markdown(mixed_data)
+        self.assertIn("Mixed Engines", md_mixed)
+        self.assertIn("Mô hình STT", md_mixed)
+        self.assertIn("Mô hình DTW", md_mixed)
+        self.assertIn("0.045", md_mixed)  # STT decode RTF rendered
+        self.assertIn("F1-Score", md_mixed)  # DTW metric rendered
 
 
 if __name__ == "__main__":

@@ -269,6 +269,8 @@ class WakeEvaluator:
 
         md_report = format_evaluation_markdown(eval_data)
         results_json_str = json.dumps(eval_data, ensure_ascii=False, indent=2)
+        eval_status = eval_data.get("status", "completed")
+        has_errors = bool(eval_data.get("has_processing_errors", eval_status == "completed_with_errors"))
 
         self.registry.save_evaluation(
             eval_id=eval_id,
@@ -280,6 +282,7 @@ class WakeEvaluator:
             sample_count=len(eligible_samples),
             results_json=results_json_str,
             report_md=md_report,
+            status=eval_status,
         )
 
         return {
@@ -290,6 +293,8 @@ class WakeEvaluator:
             "mode": mode,
             "sample_count": len(eligible_samples),
             "snapshot_hash": snapshot_hash,
+            "status": eval_status,
+            "has_processing_errors": has_errors,
             "results": eval_data,
             "report_markdown": md_report,
         }

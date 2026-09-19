@@ -9,6 +9,11 @@ from ...devices import (
     GatewayCheckResult,
     GatewayInfo,
     GatewayStatus,
+    ProviderCapability,
+    ProviderCapabilityError,
+    ProviderUnavailableError,
+    UnsupportedProviderError,
+    get_provider_for_gateway,
 )
 from ...devices.providers.broadlink_provider import BroadlinkProvider
 from ...devices.providers.mock_provider import MockDeviceProvider
@@ -126,7 +131,19 @@ def check_gateway(gateway_id: str):
     if not gw:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy gateway '{gateway_id}'")
 
-    provider = get_provider()
+    try:
+        provider = get_provider_for_gateway(gw)
+    except UnsupportedProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+    except ProviderUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
+
     try:
         with gateway_lock(gw.id, timeout=0.0):
             res = provider.check_gateway(gw)

@@ -16,12 +16,17 @@ from ...devices import (
     CodeRevision,
     CommandState,
     DeviceStorage,
+    GatewayInfo,
+    LedgerConflictError,
     Observation,
     ObservationOutcome,
+    ProviderCapability,
+    ProviderCapabilityError,
+    ProviderUnavailableError,
+    UnsupportedProviderError,
+    get_provider_for_gateway,
 )
 from ...devices.catalogs.importer import validate_broadlink_payload
-from ...devices.providers.broadlink_provider import BroadlinkProvider
-from ...devices.providers.mock_provider import MockDeviceProvider
 from ...locks import gateway_lock, ResourceBusyError
 
 router = APIRouter(prefix="/api", tags=["Devices"])
@@ -30,16 +35,20 @@ router = APIRouter(prefix="/api", tags=["Devices"])
 LEARNING_JOBS: Dict[str, Dict[str, Any]] = {}
 
 
-def get_provider():
-    if os.environ.get("SMART_HUB_MOCK_HARDWARE") == "1":
-        return MockDeviceProvider()
-    provider = BroadlinkProvider()
-    if not provider.is_available():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Broadlink SDK (python-broadlink) is not available. Please install python-broadlink or enable SMART_HUB_MOCK_HARDWARE=1 for simulation mode.",
+def get_provider(gw: Optional[GatewayInfo] = None):
+    """Resolve provider for a gateway, supporting patchable default for tests."""
+    if gw is not None:
+        return get_provider_for_gateway(gw)
+    return get_provider_for_gateway(
+        GatewayInfo(
+            id="default",
+            provider="broadlink",
+            model_name="rm4",
+            ip_address="127.0.0.1",
+            mac="00:11:22:33:44:55",
+            devtype=0x51DA,
         )
-    return provider
+    )
 
 
 class CreateApplianceRequest(BaseModel):
@@ -113,6 +122,12 @@ def create_appliance(req: CreateApplianceRequest):
     if req.code_set_id:
         cs = storage.get_code_set(req.code_set_id)
         if cs:
+            is_mock = (
+                cs.is_quarantined
+                or cs.id.endswith("_seed")
+                or "MOCK" in cs.source_name.upper()
+                or "MOCK" in cs.license.upper()
+            )
             for btn_key, b64_code in cs.codes.items():
                 rev_id = f"rev_{uuid.uuid4().hex[:10]}"
                 payload_bytes = base64.b64decode(b64_code)
@@ -124,10 +139,11 @@ def create_appliance(req: CreateApplianceRequest):
                     button_name=btn_key.replace("_", " ").title(),
                     payload_base64=b64_code,
                     payload_hash=CodeRevision.compute_hash(payload_bytes),
-                    source_type="catalog",
+                    source_type="mock_seed" if is_mock else "catalog",
                     revision_number=1,
                     is_verified=False,
                     created_at=now,
+                    is_mock_seed=is_mock,
                 )
                 storage.save_code_revision(rev)
 
@@ -185,15 +201,31 @@ def send_action(device_id: str, req: SendActionRequest):
     if not gw:
         raise HTTPException(status_code=404, detail=f"Gateway '{app.gateway_id}' không tồn tại.")
 
-    # V2-19: Provider preflight check BEFORE creating or dispatching any ledger command
+    # Provider routing guard BEFORE creating or dispatching any ledger command
     try:
-        provider = get_provider()
-        if provider is None:
-            raise RuntimeError(f"Provider '{gw.provider}' không khả dụng.")
+        provider = get_provider(gw)
+        if not provider:
+            raise ProviderUnavailableError(f"Phần cứng hoặc provider '{gw.provider}' không khả dụng.")
+    except UnsupportedProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+    except ProviderUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Phần cứng hoặc provider '{gw.provider}' không khả dụng: {exc}",
+        )
+
+    if not provider.has_capability(ProviderCapability.IR_SEND):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Provider '{gw.provider}' không hỗ trợ phát lệnh IR (thiếu capability IR_SEND).",
         )
 
     # Resolve code revision
@@ -244,45 +276,31 @@ def send_action(device_id: str, req: SendActionRequest):
                 detail=f"Nút '{req.button_key}' chưa có mã IR đã xác nhận (verified). Vui lòng thử nghiệm và xác nhận mã trước khi dùng trên remote.",
             )
 
-    # V2-08: Quarantine check when running against real hardware
+    # V2-08 / V3-04: Quarantine check when running against real hardware
     if os.environ.get("SMART_HUB_MOCK_HARDWARE") != "1":
-        if getattr(rev, "is_mock_seed", False) or rev.source_type == "mock_seed" or (rev.code_set_id and rev.code_set_id.endswith("_seed")):
+        is_quarantined_src = False
+        if rev.code_set_id:
+            src_cs = storage.get_code_set(rev.code_set_id)
+            if src_cs and src_cs.is_quarantined:
+                is_quarantined_src = True
+        if (
+            getattr(rev, "is_mock_seed", False)
+            or is_quarantined_src
+            or rev.source_type == "mock_seed"
+            or (rev.code_set_id and rev.code_set_id.endswith("_seed"))
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="Mã IR thuộc dữ liệu giả lập (mock seed); bị chặn phát tới thiết bị phần cứng thật.",
+                detail="Mã IR thuộc dữ liệu giả lập (mock seed / quarantined); bị chặn phát tới thiết bị phần cứng thật.",
             )
 
-    # V2-07: Payload digest covering appliance, gateway, button, revision ID, and payload hash
+    # V2-07 / V3-07: Payload digest covering appliance, gateway, button, revision ID, and payload hash
     digest_src = f"{app.id}:{gw.id}:{req.button_key}:{rev.id}:{rev.payload_hash}"
     current_digest = hashlib.sha256(digest_src.encode("utf-8")).hexdigest()
 
-    # Idempotency check: if request_id already exists in ledger
-    existing_entry = storage.get_ledger_entry(req.request_id)
-    if existing_entry:
-        if existing_entry.payload_digest and existing_entry.payload_digest != current_digest:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Conflict: request_id '{req.request_id}' đã được sử dụng trước đó với payload hoặc thiết bị khác.",
-            )
-        return {
-            "request_id": existing_entry.request_id,
-            "state": existing_entry.state.value,
-            "gateway_ack": existing_entry.state == CommandState.DELIVERED,
-            "message": "Lệnh đã được gửi trước đó (trả kết quả từ ledger).",
-            "sent_at": existing_entry.sent_at,
-            "button_key": existing_entry.button_key,
-            "code_revision_id": existing_entry.code_revision_id,
-        }
-
-    # Validate payload format
+    # V3-07: Atomic claim in command ledger
     try:
-        code_bytes = validate_broadlink_payload(rev.payload_base64)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Mã IR không hợp lệ: {exc}")
-
-    # Prepare command ledger atomically
-    try:
-        storage.prepare_command(
+        ledger_entry, is_claimed = storage.claim_command(
             request_id=req.request_id,
             gateway_id=gw.id,
             appliance_id=app.id,
@@ -290,21 +308,29 @@ def send_action(device_id: str, req: SendActionRequest):
             code_revision_id=rev.id,
             payload_digest=current_digest,
         )
-    except sqlite3.IntegrityError:
-        # Concurrent request with same request_id
-        race_entry = storage.get_ledger_entry(req.request_id)
-        if race_entry and race_entry.payload_digest and race_entry.payload_digest != current_digest:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Conflict: request_id '{req.request_id}' đã được claim đồng thời với payload khác.",
-            )
+    except (LedgerConflictError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
+
+    if not is_claimed:
         return {
-            "request_id": race_entry.request_id if race_entry else req.request_id,
-            "state": race_entry.state.value if race_entry else CommandState.DISPATCHING.value,
-            "gateway_ack": race_entry.state == CommandState.DELIVERED if race_entry else False,
-            "message": "Lệnh đang được xử lý đồng thời.",
-            "sent_at": race_entry.sent_at if race_entry else "",
+            "request_id": ledger_entry.request_id,
+            "state": ledger_entry.state.value,
+            "gateway_ack": ledger_entry.state == CommandState.DELIVERED,
+            "message": "Lệnh đã được gửi trước đó (trả kết quả từ ledger)." if ledger_entry.state == CommandState.DELIVERED else "Lệnh đang được xử lý đồng thời.",
+            "sent_at": ledger_entry.sent_at,
+            "button_key": ledger_entry.button_key,
+            "code_revision_id": ledger_entry.code_revision_id,
         }
+
+    # Validate payload format
+    try:
+        code_bytes = validate_broadlink_payload(rev.payload_base64)
+    except Exception as exc:
+        storage.update_command_state(req.request_id, CommandState.FAILED, error_message=f"Mã IR không hợp lệ: {exc}")
+        raise HTTPException(status_code=400, detail=f"Mã IR không hợp lệ: {exc}")
 
     storage.update_command_state(req.request_id, CommandState.DISPATCHING)
 
@@ -364,6 +390,33 @@ def start_learning_job(device_id: str, req: StartLearningRequest):
     if not gw:
         raise HTTPException(status_code=404, detail=f"Gateway '{app.gateway_id}' không tồn tại.")
 
+    # Provider routing guard BEFORE creating learning job
+    try:
+        provider = get_provider(gw)
+        if not provider:
+            raise ProviderUnavailableError(f"Phần cứng hoặc provider '{gw.provider}' không khả dụng.")
+    except UnsupportedProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+    except ProviderUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Phần cứng hoặc provider '{gw.provider}' không khả dụng: {exc}",
+        )
+
+    if not provider.has_capability(ProviderCapability.IR_LEARN):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Provider '{gw.provider}' không hỗ trợ học lệnh IR (thiếu capability IR_LEARN).",
+        )
+
     job_id = f"learn_{uuid.uuid4().hex[:10]}"
     cancel_token = threading.Event()
 
@@ -383,7 +436,6 @@ def start_learning_job(device_id: str, req: StartLearningRequest):
     LEARNING_JOBS[job_id] = job_entry
 
     def worker():
-        provider = get_provider()
         try:
             with gateway_lock(gw.id, timeout=0.0):
                 raw_ir = provider.enter_learning(

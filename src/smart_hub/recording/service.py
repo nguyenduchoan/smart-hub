@@ -114,10 +114,19 @@ class SessionConfig:
 class RecordingService:
     """Manages an active recording session with strict state machine and audio lock."""
 
-    def __init__(self, config=None, audio_device: Optional[str] = None, playback_device: Optional[str] = None):
+    def __init__(
+        self,
+        config=None,
+        audio_device: Optional[str] = None,
+        playback_device: Optional[str] = None,
+        recordings_root: Optional[Path] = None,
+        lease_timeout_seconds: float = 120.0,
+    ):
         self.app_config = config or load_config()
         self.audio_device = audio_device or self.app_config.device
         self.playback_device = playback_device or self.app_config.playback_device
+        self.recordings_root = Path(recordings_root) if recordings_root else (ROOT / "recordings")
+        self.lease_timeout_seconds = lease_timeout_seconds
 
         self.state: RecordingState = RecordingState.IDLE
         self.session_config: Optional[SessionConfig] = None
@@ -138,7 +147,7 @@ class RecordingService:
 
     def recover_interrupted_sessions(self):
         """Scan recordings directory for any session left in active state upon server restart."""
-        rec_dir = ROOT / "recordings"
+        rec_dir = self.recordings_root
         if not rec_dir.exists():
             return
         for sess_path in rec_dir.glob("*/*"):
@@ -205,8 +214,8 @@ class RecordingService:
                     self.session_id = f"S_{now.strftime('%Y%m%d_%H%M%S_%f')}_{session_cfg.speaker}"
 
                 # Create output directory
-                recordings_root = ROOT / "recordings"
-                recordings_root.mkdir(exist_ok=True)
+                recordings_root = self.recordings_root
+                recordings_root.mkdir(parents=True, exist_ok=True)
                 self.session_dir = Path(
                     tempfile.mkdtemp(
                         prefix=now.strftime("%Y%m%d-%H%M%S-") + session_cfg.speaker + "-",
@@ -249,10 +258,10 @@ class RecordingService:
         with self._lock:
             if self.state != RecordingState.WAITING_USER:
                 raise RuntimeError(f"Chỉ có thể bấm lượt tiếp theo khi trạng thái là 'waiting_user' (hiện tại: {self.state.value})")
-            if session_id and self.session_id != session_id:
+            if session_id is not None and self.session_id != session_id:
                 raise RuntimeError(f"Session ID không khớp hoặc đã kết thúc: kỳ vọng {self.session_id}, nhận {session_id}")
-            if take_sequence is not None and (self.current_take + 1) != take_sequence:
-                raise RuntimeError(f"Lượt thu không khớp (kỳ vọng lượt {self.current_take + 1}, nhận {take_sequence})")
+            if take_sequence is not None and self.current_take != take_sequence:
+                raise RuntimeError(f"Lượt thu không khớp (kỳ vọng lượt {self.current_take}, nhận {take_sequence})")
             self._advance_event.set()
 
     def stop(self):
@@ -273,7 +282,10 @@ class RecordingService:
         if not self.session_config or self.session_config.no_sync or not self.session_dir:
             return
         ensure_child_study_dirs()
-        rel_dir = str(self.session_dir.relative_to(ROOT))
+        try:
+            rel_dir = str(self.session_dir.relative_to(ROOT))
+        except ValueError:
+            rel_dir = str(self.session_dir)
         cfg = self.session_config
 
         session_record = {
@@ -339,18 +351,19 @@ class RecordingService:
                 # Wait for user trigger if manual advance with lease timeout
                 if self.session_config.manual_advance:
                     wait_start = time.monotonic()
-                    lease_timeout = 120.0
+                    lease_timeout = self.lease_timeout_seconds
                     timed_out = False
                     while not self._advance_event.is_set() and not self._stop_event.is_set():
                         if time.monotonic() - wait_start > lease_timeout:
                             timed_out = True
                             break
-                        time.sleep(0.05)
+                        time.sleep(0.01)
                     if timed_out:
                         with self._lock:
                             self.state = RecordingState.INTERRUPTED
                             self.error_message = f"Hết thời gian chờ bấm lượt tiếp theo (lease timeout {lease_timeout:.0f}s); phiên bị ngắt."
                             self.manifest["status"] = "interrupted"
+                            self.manifest["error"] = self.error_message
                             self._save_manifest()
                         break
                     if self._stop_event.is_set():
@@ -412,9 +425,11 @@ class RecordingService:
 
             # Finalize
             with self._lock:
-                if self._stop_event.is_set():
+                if self.state == RecordingState.INTERRUPTED or self._stop_event.is_set():
                     self.manifest["status"] = "interrupted"
                     self.state = RecordingState.INTERRUPTED
+                elif self.state == RecordingState.FAILED:
+                    pass
                 else:
                     self.manifest["status"] = "captured_pending_review"
                     self.state = RecordingState.COMPLETED

@@ -1052,9 +1052,24 @@ def format_evaluation_markdown(results):
     lines = []
     mode = results.get("evaluation_mode", "official")
     split = results.get("split", "dev")
+    profiles = results.get("profiles", ["standard", "sensitive"])
+    metrics = results.get("metrics", {})
+
+    status = results.get("status")
+    if not status:
+        has_errors = bool(results.get("has_processing_errors", False)) or any(
+            m.get("errors", 0) > 0 for m in metrics.values()
+        )
+        status = "completed_with_errors" if has_errors else "completed"
 
     lines.append(f"# Báo cáo đánh giá offline: Giọng bé và người lớn")
     lines.append("")
+    lines.append(f"- Trạng thái: **{status}**")
+    if status == "completed_with_errors":
+        lines.append(f"> [!WARNING]")
+        lines.append(f"> Đợt đánh giá có mẫu gặp lỗi xử lý (**completed_with_errors**). Không đủ điều kiện nghiệm thu chính thức.")
+        lines.append("")
+
     if mode != "official":
         lines.append(f"> [!WARNING]")
         lines.append(f"> Chế độ đánh giá: **{mode.upper()}** (không dùng làm acceptance benchmark chính thức).")
@@ -1067,84 +1082,270 @@ def format_evaluation_markdown(results):
     lines.append(f"- Tổng số mẫu hợp lệ: **{results.get('eligible_total', len(results.get('samples', [])))}**")
     lines.append("")
 
-    profiles = results.get("profiles", ["standard", "sensitive"])
-    metrics = results.get("metrics", {})
-
-    lines.append(f"## 1. So sánh tổng hợp giữa các profile")
-    lines.append("")
-
-    headers = ["Chỉ số"]
+    # Determine engines present in profiles
+    stt_profiles = []
+    dtw_profiles = []
     for p in profiles:
-        tag = "baseline" if p == "standard" else "candidate"
-        headers.append(f"{p} ({tag})")
-    headers.append("Ghi chú")
-    lines.append("| " + " | ".join(headers) + " |")
-    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+        m = metrics.get(p, {})
+        eng = m.get("engine", "")
+        if eng == "dtw" or ("f1" in m and "performance" not in m) or ("tp" in m and "performance" not in m):
+            dtw_profiles.append(p)
+        else:
+            stt_profiles.append(p)
 
     def pct(r):
         return f"{r * 100:.1f}%" if r is not None else "N/A"
 
-    # Row 1: Positive accuracy
-    row_acc = ["Nhận đúng 1 lần (dương)"]
-    for p in profiles:
-        m = metrics.get(p, {})
-        pos = m.get("positive", {})
-        err = pos.get("errors", 0)
-        err_str = f" [{err} ERROR]" if err else ""
-        row_acc.append(f"{pos.get('accurate', 0)}/{pos.get('eligible', 0)} ({pct(pos.get('accurate_rate'))}){err_str}")
-    row_acc.append("N/A - xem acceptance theo nhóm")
-    lines.append("| " + " | ".join(row_acc) + " |")
+    if stt_profiles and not dtw_profiles:
+        # Pure STT report (preserve existing layout exactly)
+        lines.append(f"## 1. So sánh tổng hợp giữa các profile")
+        lines.append("")
 
-    # Row 2: FRR
-    row_frr = ["Bỏ sót FRR"]
-    for p in profiles:
-        pos = metrics.get(p, {}).get("positive", {})
-        row_frr.append(f"{pos.get('missed', 0)}/{pos.get('eligible', 0)} ({pct(pos.get('frr'))})")
-    row_frr.append("N/A - xem acceptance theo nhóm")
-    lines.append("| " + " | ".join(row_frr) + " |")
+        headers = ["Chỉ số"]
+        for p in stt_profiles:
+            tag = "baseline" if p == "standard" else "candidate"
+            headers.append(f"{p} ({tag})")
+        headers.append("Ghi chú")
+        lines.append("| " + " | ".join(headers) + " |")
+        lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
 
-    # Row 3: Duplicate
-    row_dup = ["Lượt trùng (>1 event)"]
-    for p in profiles:
-        pos = metrics.get(p, {}).get("positive", {})
-        row_dup.append(f"{pos.get('duplicate', 0)} ({pct(pos.get('duplicate_rate'))})")
-    row_dup.append("0 lượt trùng (toàn cục)")
-    lines.append("| " + " | ".join(row_dup) + " |")
+        # Row 1: Positive accuracy
+        row_acc = ["Nhận đúng 1 lần (dương)"]
+        for p in stt_profiles:
+            m = metrics.get(p, {})
+            pos = m.get("positive", {})
+            err = pos.get("errors", 0)
+            err_str = f" [{err} ERROR]" if err else ""
+            row_acc.append(f"{pos.get('accurate', 0)}/{pos.get('eligible', 0)} ({pct(pos.get('accurate_rate'))}){err_str}")
+        row_acc.append("N/A - xem acceptance theo nhóm")
+        lines.append("| " + " | ".join(row_acc) + " |")
 
-    # Row 4: FAR
-    row_far = ["Báo nhầm trên câu âm (FAR)"]
-    for p in profiles:
-        neg = metrics.get(p, {}).get("negative", {})
-        err = neg.get("errors", 0)
-        err_str = f" [{err} ERROR]" if err else ""
-        row_far.append(f"{neg.get('false_alarm', 0)}/{neg.get('eligible', 0)} ({pct(neg.get('far'))}){err_str}")
-    row_far.append("0% (toàn cục)")
-    lines.append("| " + " | ".join(row_far) + " |")
+        # Row 2: FRR
+        row_frr = ["Bỏ sót FRR"]
+        for p in stt_profiles:
+            pos = metrics.get(p, {}).get("positive", {})
+            row_frr.append(f"{pos.get('missed', 0)}/{pos.get('eligible', 0)} ({pct(pos.get('frr'))})")
+        row_frr.append("N/A - xem acceptance theo nhóm")
+        lines.append("| " + " | ".join(row_frr) + " |")
 
-    # Row 5: RTF (Decode RTF)
-    row_rtf = ["RTF giải mã CPU (decode RTF)"]
-    for p in profiles:
-        perf = metrics.get(p, {}).get("performance", {})
-        row_rtf.append(f"{perf.get('decode_rtf', 0.0):.3f}")
-    row_rtf.append("< 0.100 (ngưỡng chẩn đoán)")
-    lines.append("| " + " | ".join(row_rtf) + " |")
+        # Row 3: Duplicate
+        row_dup = ["Lượt trùng (>1 event)"]
+        for p in stt_profiles:
+            pos = metrics.get(p, {}).get("positive", {})
+            row_dup.append(f"{pos.get('duplicate', 0)} ({pct(pos.get('duplicate_rate'))})")
+        row_dup.append("0 lượt trùng (toàn cục)")
+        lines.append("| " + " | ".join(row_dup) + " |")
 
-    # Row 6: Max STT time
-    row_max = ["Thời gian STT max"]
-    for p in profiles:
-        perf = metrics.get(p, {}).get("performance", {})
-        row_max.append(f"{perf.get('max_decode_seconds', 0.0):.3f}s")
-    row_max.append("< 0.500s (ngưỡng chẩn đoán)")
-    lines.append("| " + " | ".join(row_max) + " |")
+        # Row 4: FAR
+        row_far = ["Báo nhầm trên câu âm (FAR)"]
+        for p in stt_profiles:
+            neg = metrics.get(p, {}).get("negative", {})
+            err = neg.get("errors", 0)
+            err_str = f" [{err} ERROR]" if err else ""
+            row_far.append(f"{neg.get('false_alarm', 0)}/{neg.get('eligible', 0)} ({pct(neg.get('far'))}){err_str}")
+        row_far.append("0% (toàn cục)")
+        lines.append("| " + " | ".join(row_far) + " |")
 
-    # Row 7: Total errors
-    row_err = ["Tổng lỗi xử lý (errors)"]
-    for p in profiles:
-        err = metrics.get(p, {}).get("errors", 0)
-        row_err.append(f"{err}")
-    row_err.append("0 (toàn cục)")
-    lines.append("| " + " | ".join(row_err) + " |")
-    lines.append("")
+        # Row 5: RTF (Decode RTF)
+        row_rtf = ["RTF giải mã CPU (decode RTF)"]
+        for p in stt_profiles:
+            perf = metrics.get(p, {}).get("performance", {})
+            rtf_v = perf.get('decode_rtf')
+            row_rtf.append(f"{rtf_v:.3f}" if rtf_v is not None else "N/A")
+        row_rtf.append("< 0.100 (ngưỡng chẩn đoán)")
+        lines.append("| " + " | ".join(row_rtf) + " |")
+
+        # Row 6: Max STT time
+        row_max = ["Thời gian STT max"]
+        for p in stt_profiles:
+            perf = metrics.get(p, {}).get("performance", {})
+            max_s = perf.get('max_decode_seconds')
+            row_max.append(f"{max_s:.3f}s" if max_s is not None else "N/A")
+        row_max.append("< 0.500s (ngưỡng chẩn đoán)")
+        lines.append("| " + " | ".join(row_max) + " |")
+
+        # Row 7: Total errors
+        row_err = ["Tổng lỗi xử lý (errors)"]
+        for p in stt_profiles:
+            err = metrics.get(p, {}).get("errors", 0)
+            row_err.append(f"{err}")
+        row_err.append("0 (toàn cục)")
+        lines.append("| " + " | ".join(row_err) + " |")
+        lines.append("")
+
+    elif dtw_profiles and not stt_profiles:
+        # Pure DTW report
+        lines.append(f"## 1. So sánh tổng hợp giữa các profile (DTW)")
+        lines.append("")
+
+        headers = ["Chỉ số"]
+        for p in dtw_profiles:
+            headers.append(f"{p} (candidate)")
+        headers.append("Ghi chú")
+        lines.append("| " + " | ".join(headers) + " |")
+        lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+
+        def dtw_row(label, extractor, note=""):
+            r = [label]
+            for p in dtw_profiles:
+                m = metrics.get(p, {})
+                r.append(str(extractor(m)))
+            r.append(note)
+            lines.append("| " + " | ".join(r) + " |")
+
+        dtw_row("Độ chính xác (accuracy)", lambda m: pct(m.get('accuracy')), "Tỷ lệ đúng trên eligible_total")
+        dtw_row("Độ chuẩn xác (precision)", lambda m: pct(m.get('precision')), "TP / (TP + FP)")
+        dtw_row("Độ nhạy (recall)", lambda m: pct(m.get('recall')), "TP / positive.eligible")
+        dtw_row("F1-Score", lambda m: pct(m.get('f1')), "Trung bình điều hòa precision & recall")
+        dtw_row("Báo nhầm FAR", lambda m: pct(m.get('far')), "FP / negative.eligible")
+        dtw_row("Độ bao phủ (coverage)", lambda m: pct(m.get('coverage')), "processed_total / eligible_total")
+        dtw_row("Tỷ lệ lỗi (error_rate)", lambda m: pct(m.get('error_rate')), "errors / eligible_total")
+        dtw_row("Tổng mẫu hợp lệ (eligible)", lambda m: m.get('eligible_total', m.get('total', 0)))
+        dtw_row("Mẫu xử lý thành công (processed)", lambda m: m.get('processed_total', 0))
+        dtw_row("Tổng lỗi xử lý (errors)", lambda m: m.get('errors', 0), "0 lỗi (toàn cục)")
+        dtw_row("Ma trận (TP/FP/TN/FN)", lambda m: f"{m.get('tp', 0)}/{m.get('fp', 0)}/{m.get('tn', 0)}/{m.get('fn', 0)}")
+        dtw_row("Ngưỡng tương đồng (threshold)", lambda m: m.get('threshold', 'N/A'))
+        lines.append("")
+
+        for p in dtw_profiles:
+            m = metrics.get(p, {})
+            pos = m.get("positive", {})
+            neg = m.get("negative", {})
+            lines.append(f"### Chi tiết chỉ số DTW: {p}")
+            lines.append(f"- eligible={m.get('eligible_total', m.get('total', 0))}, processed={m.get('processed_total', 0)}, errors={m.get('errors', 0)}")
+            lines.append(f"- positive.eligible={pos.get('eligible', 0)}, positive.processed={pos.get('processed', 0)}, positive.errors={pos.get('errors', 0)}")
+            lines.append(f"- negative.eligible={neg.get('eligible', 0)}, negative.processed={neg.get('processed', 0)}, negative.errors={neg.get('errors', 0)}")
+            lines.append(f"- tp={m.get('tp', 0)}, fn={m.get('fn', 0)}, tn={m.get('tn', 0)}, fp={m.get('fp', 0)}")
+            lines.append(f"- accuracy={pct(m.get('accuracy'))}")
+            lines.append(f"- precision={pct(m.get('precision'))}")
+            lines.append(f"- recall={pct(m.get('recall'))}")
+            lines.append(f"- F1={pct(m.get('f1'))}")
+            lines.append(f"- FAR={pct(m.get('far'))}")
+            lines.append(f"- coverage={pct(m.get('coverage'))}")
+            lines.append(f"- error_rate={pct(m.get('error_rate'))}")
+            lines.append("")
+
+    else:
+        # Mixed STT + DTW report
+        lines.append(f"## 1. So sánh tổng hợp giữa các profile (Mixed Engines)")
+        lines.append("")
+
+        if stt_profiles:
+            lines.append(f"### 1.1 Mô hình STT")
+            lines.append("")
+            headers = ["Chỉ số"]
+            for p in stt_profiles:
+                tag = "baseline" if p == "standard" else "candidate"
+                headers.append(f"{p} ({tag})")
+            headers.append("Ghi chú")
+            lines.append("| " + " | ".join(headers) + " |")
+            lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+
+            row_acc = ["Nhận đúng 1 lần (dương)"]
+            for p in stt_profiles:
+                pos = metrics.get(p, {}).get("positive", {})
+                err = pos.get("errors", 0)
+                err_str = f" [{err} ERROR]" if err else ""
+                row_acc.append(f"{pos.get('accurate', 0)}/{pos.get('eligible', 0)} ({pct(pos.get('accurate_rate'))}){err_str}")
+            row_acc.append("N/A - xem acceptance theo nhóm")
+            lines.append("| " + " | ".join(row_acc) + " |")
+
+            row_frr = ["Bỏ sót FRR"]
+            for p in stt_profiles:
+                pos = metrics.get(p, {}).get("positive", {})
+                row_frr.append(f"{pos.get('missed', 0)}/{pos.get('eligible', 0)} ({pct(pos.get('frr'))})")
+            row_frr.append("N/A - xem acceptance theo nhóm")
+            lines.append("| " + " | ".join(row_frr) + " |")
+
+            row_dup = ["Lượt trùng (>1 event)"]
+            for p in stt_profiles:
+                pos = metrics.get(p, {}).get("positive", {})
+                row_dup.append(f"{pos.get('duplicate', 0)} ({pct(pos.get('duplicate_rate'))})")
+            row_dup.append("0 lượt trùng (toàn cục)")
+            lines.append("| " + " | ".join(row_dup) + " |")
+
+            row_far = ["Báo nhầm trên câu âm (FAR)"]
+            for p in stt_profiles:
+                neg = metrics.get(p, {}).get("negative", {})
+                err = neg.get("errors", 0)
+                err_str = f" [{err} ERROR]" if err else ""
+                row_far.append(f"{neg.get('false_alarm', 0)}/{neg.get('eligible', 0)} ({pct(neg.get('far'))}){err_str}")
+            row_far.append("0% (toàn cục)")
+            lines.append("| " + " | ".join(row_far) + " |")
+
+            row_rtf = ["RTF giải mã CPU (decode RTF)"]
+            for p in stt_profiles:
+                perf = metrics.get(p, {}).get("performance", {})
+                rtf_v = perf.get('decode_rtf')
+                row_rtf.append(f"{rtf_v:.3f}" if rtf_v is not None else "N/A")
+            row_rtf.append("< 0.100 (ngưỡng chẩn đoán)")
+            lines.append("| " + " | ".join(row_rtf) + " |")
+
+            row_max = ["Thời gian STT max"]
+            for p in stt_profiles:
+                perf = metrics.get(p, {}).get("performance", {})
+                max_s = perf.get('max_decode_seconds')
+                row_max.append(f"{max_s:.3f}s" if max_s is not None else "N/A")
+            row_max.append("< 0.500s (ngưỡng chẩn đoán)")
+            lines.append("| " + " | ".join(row_max) + " |")
+
+            row_err = ["Tổng lỗi xử lý (errors)"]
+            for p in stt_profiles:
+                err = metrics.get(p, {}).get("errors", 0)
+                row_err.append(f"{err}")
+            row_err.append("0 (toàn cục)")
+            lines.append("| " + " | ".join(row_err) + " |")
+            lines.append("")
+
+        if dtw_profiles:
+            lines.append(f"### 1.2 Mô hình DTW")
+            lines.append("")
+            headers = ["Chỉ số"]
+            for p in dtw_profiles:
+                headers.append(f"{p} (candidate)")
+            headers.append("Ghi chú")
+            lines.append("| " + " | ".join(headers) + " |")
+            lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+
+            def dtw_row_mixed(label, extractor, note=""):
+                r = [label]
+                for p in dtw_profiles:
+                    m = metrics.get(p, {})
+                    r.append(str(extractor(m)))
+                r.append(note)
+                lines.append("| " + " | ".join(r) + " |")
+
+            dtw_row_mixed("Độ chính xác (accuracy)", lambda m: pct(m.get('accuracy')), "Tỷ lệ đúng trên eligible_total")
+            dtw_row_mixed("Độ chuẩn xác (precision)", lambda m: pct(m.get('precision')), "TP / (TP + FP)")
+            dtw_row_mixed("Độ nhạy (recall)", lambda m: pct(m.get('recall')), "TP / positive.eligible")
+            dtw_row_mixed("F1-Score", lambda m: pct(m.get('f1')), "Trung bình điều hòa precision & recall")
+            dtw_row_mixed("Báo nhầm FAR", lambda m: pct(m.get('far')), "FP / negative.eligible")
+            dtw_row_mixed("Độ bao phủ (coverage)", lambda m: pct(m.get('coverage')), "processed_total / eligible_total")
+            dtw_row_mixed("Tỷ lệ lỗi (error_rate)", lambda m: pct(m.get('error_rate')), "errors / eligible_total")
+            dtw_row_mixed("Tổng mẫu hợp lệ (eligible)", lambda m: m.get('eligible_total', m.get('total', 0)))
+            dtw_row_mixed("Mẫu xử lý thành công (processed)", lambda m: m.get('processed_total', 0))
+            dtw_row_mixed("Tổng lỗi xử lý (errors)", lambda m: m.get('errors', 0), "0 lỗi (toàn cục)")
+            dtw_row_mixed("Ma trận (TP/FP/TN/FN)", lambda m: f"{m.get('tp', 0)}/{m.get('fp', 0)}/{m.get('tn', 0)}/{m.get('fn', 0)}")
+            dtw_row_mixed("Ngưỡng tương đồng (threshold)", lambda m: m.get('threshold', 'N/A'))
+            lines.append("")
+
+            for p in dtw_profiles:
+                m = metrics.get(p, {})
+                pos = m.get("positive", {})
+                neg = m.get("negative", {})
+                lines.append(f"### Chi tiết chỉ số DTW: {p}")
+                lines.append(f"- eligible={m.get('eligible_total', m.get('total', 0))}, processed={m.get('processed_total', 0)}, errors={m.get('errors', 0)}")
+                lines.append(f"- positive.eligible={pos.get('eligible', 0)}, positive.processed={pos.get('processed', 0)}, positive.errors={pos.get('errors', 0)}")
+                lines.append(f"- negative.eligible={neg.get('eligible', 0)}, negative.processed={neg.get('processed', 0)}, negative.errors={neg.get('errors', 0)}")
+                lines.append(f"- tp={m.get('tp', 0)}, fn={m.get('fn', 0)}, tn={m.get('tn', 0)}, fp={m.get('fp', 0)}")
+                lines.append(f"- accuracy={pct(m.get('accuracy'))}")
+                lines.append(f"- precision={pct(m.get('precision'))}")
+                lines.append(f"- recall={pct(m.get('recall'))}")
+                lines.append(f"- F1={pct(m.get('f1'))}")
+                lines.append(f"- FAR={pct(m.get('far'))}")
+                lines.append(f"- coverage={pct(m.get('coverage'))}")
+                lines.append(f"- error_rate={pct(m.get('error_rate'))}")
+                lines.append("")
 
     lines.append(f"## 2. Chi tiết từng nhóm thử nghiệm")
     lines.append("")
@@ -1167,22 +1368,28 @@ def format_evaluation_markdown(results):
 
     lines.append(f"## 3. Danh sách chi tiết từng file WAV")
     lines.append("")
-    lines.append(f"| Sample ID | Nhãn | Profile | Events | Status | Clipped | Transcript STT | Decode (s) | Decode RTF |")
-    lines.append(f"| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    lines.append(f"| Sample ID | Nhãn | Profile | Events / Outcome | Status | Transcript / Info | Decode (s) | Decode RTF |")
+    lines.append(f"| --- | --- | --- | --- | --- | --- | --- | --- |")
 
     for s in results.get("samples", []):
         sid = s.get("sample_id", Path(s.get("source", "")).name)
         lbl = s.get("label")
         for p in profiles:
             res = s.get("evaluations", {}).get(p, {})
-            ev = res.get("events", 0)
+            ev = res.get("outcome") if res.get("outcome") is not None else res.get("events", 0)
             st = res.get("status", "UNKNOWN")
-            clp = res.get("clipped_total", 0)
-            tx = " / ".join(escape_markdown(t) for t in res.get("transcripts", [])) or "(không có text)"
-            dec = f"{res.get('decode_seconds', 0.0):.3f}"
-            rtf_val = f"{res.get('decode_rtf', 0.0):.3f}"
+            if "transcripts" in res:
+                tx = " / ".join(escape_markdown(t) for t in res.get("transcripts", [])) or "(không có text)"
+            elif res.get("score") is not None:
+                tx = f"score={res.get('score'):.4f}"
+            elif res.get("error"):
+                tx = f"error: {escape_markdown(str(res.get('error')))}"
+            else:
+                tx = "-"
+            dec = f"{res.get('decode_seconds', 0.0):.3f}" if res.get("decode_seconds") is not None else "N/A"
+            rtf_val = f"{res.get('decode_rtf', 0.0):.3f}" if res.get("decode_rtf") is not None else "N/A"
             lines.append(
-                f"| `{escape_markdown(sid)}` | `{lbl}` | `{p}` | {ev} | **{st}** | {clp} | {tx} | {dec} | {rtf_val} |"
+                f"| `{escape_markdown(sid)}` | `{lbl}` | `{p}` | {ev} | **{st}** | {tx} | {dec} | {rtf_val} |"
             )
     lines.append("")
 

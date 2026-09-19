@@ -297,16 +297,17 @@ class WakeRegistry:
             ]
 
     def save_evaluation(self, eval_id: str, name: str, candidate_ids: List[str], split: str, mode: str,
-                        snapshot_hash: str, sample_count: int, results_json: str, report_md: str):
+                        snapshot_hash: str, sample_count: int, results_json: str, report_md: str,
+                        status: str = "completed"):
         with self._get_connection() as conn:
             now = datetime.now().astimezone().isoformat()
             conn.execute(
                 """
                 INSERT OR REPLACE INTO wake_evaluations
                 (id, name, candidate_ids, split, mode, dataset_snapshot_hash, sample_count, results_json, report_markdown, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (eval_id, name, json.dumps(candidate_ids), split, mode, snapshot_hash, sample_count, results_json, report_md, now),
+                (eval_id, name, json.dumps(candidate_ids), split, mode, snapshot_hash, sample_count, results_json, report_md, status, now),
             )
 
     def get_evaluation(self, eval_id: str) -> Optional[Dict[str, Any]]:
@@ -314,6 +315,9 @@ class WakeRegistry:
             row = conn.execute("SELECT * FROM wake_evaluations WHERE id = ?", (eval_id,)).fetchone()
             if not row:
                 return None
+            results = json.loads(row["results_json"])
+            eval_status = row["status"]
+            has_errors = (eval_status == "completed_with_errors") or bool(results.get("has_processing_errors", False))
             return {
                 "id": row["id"],
                 "name": row["name"],
@@ -322,9 +326,10 @@ class WakeRegistry:
                 "mode": row["mode"],
                 "snapshot_hash": row["dataset_snapshot_hash"],
                 "sample_count": row["sample_count"],
-                "results": json.loads(row["results_json"]),
+                "results": results,
                 "report_markdown": row["report_markdown"],
-                "status": row["status"],
+                "status": eval_status,
+                "has_processing_errors": has_errors,
                 "created_at": row["created_at"],
             }
 
@@ -340,6 +345,7 @@ class WakeRegistry:
                     "mode": r["mode"],
                     "sample_count": r["sample_count"],
                     "status": r["status"],
+                    "has_processing_errors": (r["status"] == "completed_with_errors"),
                     "created_at": r["created_at"],
                 }
                 for r in rows

@@ -8,13 +8,20 @@ Tài liệu này là prompt/task cho vòng sửa tiếp theo sau khi review comm
 Branch: codex/local-dashboard-broadlink
 HEAD đã review: 89d38c592698fb81a80ff148b37a9b2f277198d5
 Parent: 522401d3364e22daa9e1b82d84e3081c92a2b8e0
-Commit message hiện tại:
+Commit message của HEAD đã review:
 fix(dashboard): resolve review round 2 findings V2-01 to V2-19 and AC-28
 ~~~
 
 Round 2 đã sửa được nhiều vấn đề quan trọng, đặc biệt: AlsaCapture.drain(), technical QC khi review sample, tách transcript khỏi ground truth, binding revision/appliance/button, idempotency digest cơ bản, verified remote revisions, cue playback failure, sync failure state, input validation, dataset lock/revision/audit, cross-split checks, mock provenance và provider preflight.
 
 **Không làm lại toàn bộ Round 2.** Chỉ sửa các finding dưới đây và thêm regression tests để khóa behavior.
+
+Các invariant bổ sung cần được khóa bằng regression tests trong R3:
+
+- request advance phải có đủ `session_id` và `take_sequence`, không chấp nhận request thiếu binding;
+- idempotency claim phải atomic, cùng `request_id` không được gửi provider quá một lần;
+- upsert CodeSet/CodeRevision phải giữ `code_set_id` và các cờ quarantine sau reload;
+- provider không xác định hoặc không tương thích phải fail-closed trước hardware I/O, kể cả khi AC-28 vẫn ở trạng thái partial.
 
 Không amend/rewrite commit 89d38c5. Tạo **một follow-up commit mới** trên chính branch codex/local-dashboard-broadlink.
 
@@ -69,9 +76,7 @@ Mặc định dashboard dùng manual_advance=true, nên lỗi này chặn luồn
 
 ## Yêu cầu sửa
 
-Chọn **một semantics duy nhất** và dùng xuyên suốt UI/API/service.
-
-Khuyến nghị:
+Dùng **một semantics duy nhất** xuyên suốt UI/API/service:
 
 ~~~text
 current_take = take đang chờ được bắt đầu
@@ -89,6 +94,17 @@ wrong session_id -> 409
 
 Không dùng current_take + 1 nếu current_take đã đại diện cho lượt đang waiting.
 
+Request từ dashboard phải gửi đủ hai binding:
+
+~~~text
+session_id: bắt buộc, chuỗi không rỗng, đúng phiên đang active
+take_sequence: bắt buộc, số nguyên dương, đúng current_take đang WAITING_USER
+~~~
+
+POST /api/recording/advance không chấp nhận body trống, thiếu trường, null hoặc binding sai kiểu/giá trị. Các request này phải trả 422 trước khi set event hoặc tạo side effect; không ép chuỗi, float hoặc boolean thành take_sequence. Binding đúng schema nhưng sai phiên, stale/future take hoặc sai trạng thái trả 409.
+
+Nếu CLI/internal caller còn cần advance() không tham số, giữ compatibility ở lớp nội bộ; endpoint dashboard không được bỏ qua binding. UI chỉ cho advance khi đã có status WAITING_USER cùng session_id/current_take hợp lệ.
+
 ## Regression tests bắt buộc
 
 Thêm test qua cả service và API contract:
@@ -99,6 +115,10 @@ Thêm test qua cả service và API contract:
 4. Gửi lại stale take_sequence=1 khi service đã sang waiting take 2 phải fail 409.
 5. take_sequence=2 ở take 2 phải thành công.
 6. Wrong session_id phải fail 409.
+7. Body trống, thiếu/null session_id hoặc take_sequence, session_id rỗng/chỉ có khoảng trắng -> 422.
+8. take_sequence bằng 0, âm, chuỗi, float hoặc boolean -> 422.
+9. Request bị từ chối không set advance event, không bắt đầu capture/cue và không đổi take.
+10. Binding đúng schema nhưng future take hoặc service không ở WAITING_USER -> 409, không side effect.
 
 Test phải đi qua cùng semantics mà app.js sử dụng, không chỉ gọi service.advance() không tham số.
 
@@ -180,32 +200,49 @@ Ví dụ:
 }
 ~~~
 
-Metrics phải tách:
+### Metrics và denominator bắt buộc
+
+ERROR được giữ trong eligible của đúng lớp positive/negative, nhưng không được cộng vào TP/FP/TN/FN. Các invariant:
 
 ~~~text
-eligible_total
-processed_total
-errors
-tp
-fp
-tn
-fn
+processed_total = tp + fp + tn + fn
+errors = positive.errors + negative.errors
+eligible_total = processed_total + errors
+positive.processed = tp + fn
+negative.processed = tn + fp
+positive.eligible = positive.processed + positive.errors
+negative.eligible = negative.processed + negative.errors
+eligible_total = positive.eligible + negative.eligible
 ~~~
 
-Và accuracy/recall/FAR phải dùng denominator đã định nghĩa rõ, không silently bỏ ERROR.
+Lưu các số trên trong JSON; có thể thêm tp/fn hoặc tn/fp vào object của từng lớp. processed nghĩa là xử lý thành công, không đồng nghĩa dự đoán đúng.
 
-Tối thiểu:
+Chốt công thức DTW dùng cho report chính:
 
 ~~~text
-10 eligible
-9 processed correctly
-1 integrity ERROR
-=> eligible_total = 10
-=> processed_total = 9
-=> errors = 1
+accuracy = (tp + tn) / eligible_total
+recall = tp / positive.eligible
+far = fp / negative.eligible
+precision = tp / (tp + fp)
+coverage = processed_total / eligible_total
+error_rate = errors / eligible_total
 ~~~
 
-Không được biến thành 9 eligible.
+accuracy/recall/FAR ở đây là tỷ lệ trên tập eligible, bao gồm sample ERROR trong denominator. precision chỉ tính trên các dự đoán positive đã xử lý được. F1 là trung bình điều hòa của precision và recall vừa định nghĩa; nếu cả hai bằng 0 thì F1 = 0. Ghi rõ semantics này trong report. Nếu cần tỷ lệ chỉ trên mẫu processed để chẩn đoán, dùng tên riêng, không thay thế metrics chính.
+
+Denominator bằng 0 -> lưu null, render N/A. F1 cũng là null khi precision hoặc recall không xác định. Không silently bỏ ERROR hoặc render tỷ lệ 0 giả.
+
+Ví dụ: 10 eligible, 9 processed, 1 ERROR -> eligible_total = 10, processed_total = 9, errors = 1, coverage = 90%, error_rate = 10%. Có ERROR thì FAR thấp không đủ chứng minh acceptance đạt.
+
+### Trạng thái cuối và lưu report
+
+- eval_data.status = completed nếu không có processing error; completed_with_errors nếu bất kỳ candidate nào có ERROR.
+- eval_data.has_processing_errors phản ánh cùng điều kiện; giữ số lỗi riêng của từng candidate.
+- Official run có ERROR không đủ điều kiện acceptance, dù các tỷ lệ khác đạt ngưỡng.
+- Worker xử lý xong và tạo được kết quả vẫn trả envelope status=ok, exit 0, kèm eval_data có trạng thái trên. Parent phải lưu JSON/Markdown rồi mới trả kết quả. Không dùng exit khác 0 cho sample ERROR khiến evaluator bỏ mất report.
+- API POST /api/wake/evaluations trả HTTP 200 khi kết quả đã được lưu, nhưng phải có status và has_processing_errors tương ứng ở response cùng evaluation ID. UI phải hiển thị processing error khi completed_with_errors.
+- GET lại evaluation sau reload phải giữ trạng thái, số lỗi và report đó. Lỗi worker không tạo được kết quả hoặc lỗi lưu report vẫn là lỗi thực thi, không trả completed.
+- CLI official benchmark giữ policy lưu report trước rồi exit khác 0 khi có processing error; không đồng nhất exit code của worker nội bộ với CLI cuối cùng.
 
 ## Regression tests bắt buộc
 
@@ -216,7 +253,11 @@ Không được biến thành 9 eligible.
 - malformed WAV -> ERROR.
 - backend/features không được gọi sau SHA mismatch.
 - 10 sample, 9 valid + 1 ERROR -> denominator vẫn 10.
-- official evaluation có ERROR phải lưu report/result nhưng trả/final status thể hiện benchmark có processing error theo policy hiện có.
+- Test riêng ERROR ở lớp positive và negative; đối chiếu eligible/processed/errors và công thức metrics của từng lớp.
+- Dataset không có positive, không có negative hoặc không có positive prediction -> metric thiếu denominator là null/N/A.
+- official evaluation có ERROR -> lưu report/result, trả completed_with_errors + has_processing_errors=true; đọc lại sau reload vẫn đầy đủ.
+- Kiểm tra cả in-process và subprocess worker để sample ERROR không làm parent bỏ qua bước lưu report.
+- Run không có ERROR -> completed + has_processing_errors=false.
 
 Không bắt lỗi bằng except Exception: score=0.
 
@@ -268,8 +309,10 @@ Normalize mọi engine sang contract chung đủ để formatter render đúng:
 eligible_total
 processed_total
 errors
-positive.{eligible,accurate,missed,...}
-negative.{eligible,correct_reject,false_alarm,...}
+positive.{eligible,processed,accurate,missed,errors,...}
+negative.{eligible,processed,correct_reject,false_alarm,errors,...}
+coverage
+error_rate
 performance (optional / N/A)
 ~~~
 
@@ -280,7 +323,7 @@ DTW-specific values như score/threshold/F1 có thể thêm riêng.
 Tạo report generator của Wake Lab biết từng engine:
 
 - STT: accuracy/FRR/FAR/duplicate/RTF.
-- DTW: TP/FP/TN/FN, precision, recall, F1, accuracy, threshold, ERROR count.
+- DTW: TP/FP/TN/FN, precision, recall, F1, accuracy, FAR, threshold, eligible/processed/ERROR, coverage và error_rate theo V3-02.
 - Unsupported metric phải ghi N/A, không ghi 0 giả.
 
 Ưu tiên code rõ ràng, không dùng string replacement sau khi formatter chạy.
@@ -293,13 +336,31 @@ Tạo fixture DTW với số dễ kiểm:
 eligible=10
 processed=9
 errors=1
+positive.eligible=6
+positive.processed=5
+positive.errors=1
+negative.eligible=4
+negative.processed=4
+negative.errors=0
 tp=4
 fn=1
 tn=3
 fp=1
 ~~~
 
-Markdown phải chứa đúng các số đó hoặc normalized equivalent.
+Markdown phải chứa đúng các số đó hoặc normalized equivalent, cùng status completed_with_errors. Các tỷ lệ sau làm tròn một chữ số thập phân:
+
+~~~text
+accuracy=70.0%
+precision=80.0%
+recall=66.7%
+F1=72.7%
+FAR=25.0%
+coverage=90.0%
+error_rate=10.0%
+~~~
+
+Thêm fixture chuyển ERROR sang lớp negative: positive.eligible=5, negative.eligible=5, positive.errors=0, negative.errors=1; giữ TP/FP/TN/FN. Khi đó recall=80.0%, FAR=20.0%, F1=80.0%; accuracy và coverage không đổi.
 
 Không được có fake STT 0/0 hoặc RTF 0.000 nếu metric đó không áp dụng.
 
@@ -307,7 +368,7 @@ Thêm test evaluation có cả STT + DTW trong cùng report và cả hai phải 
 
 ---
 
-# V3-04 — P1/P2: Quarantine mock seed chưa persist end-to-end
+# V3-04 — P1: Quarantine mock seed và liên kết dữ liệu chưa được bảo toàn end-to-end
 
 ## Hiện trạng
 
@@ -332,6 +393,8 @@ Do đó getattr(rev, "is_mock_seed", False) không phản ánh DB flag sau khi r
 Built-in seed thường còn bị chặn nhờ ID *_seed, nhưng imported/mock catalog được quarantine dựa trên provenance mà ID không có suffix có thể lọt qua.
 
 Ngoài ra INSERT OR REPLACE có thể tạo lại row với default is_quarantined=0 nếu flag không được persist.
+
+Đã tái hiện thêm: save_code_set() trên cùng ID làm code_revisions.code_set_id thành NULL do thao tác REPLACE kích hoạt ON DELETE SET NULL. appliances.code_set_id cũng có cùng kiểu khóa ngoại; REPLACE revision có thể xóa observations qua ON DELETE CASCADE. Chỉ thêm cột flag vào INSERT không giải quyết việc mất liên kết/lịch sử này.
 
 ## Yêu cầu sửa
 
@@ -364,6 +427,14 @@ OR source code set is quarantined
 
 Suffix _seed chỉ có thể là defense-in-depth, không phải source of truth.
 
+### Save/upsert phải bảo toàn liên kết và lịch sử
+
+- Dùng UPDATE hoặc INSERT ... ON CONFLICT DO UPDATE phù hợp; không xóa rồi tạo lại row để cập nhật cùng ID.
+- Save/update CodeSet phải giữ code_set_id của appliance và revision con.
+- Save/update CodeRevision phải giữ appliance_id/code_set_id đúng binding và các observation liên quan.
+- Cờ đã được quarantine không tự hạ từ true về false khi re-import hoặc save object cũ có giá trị mặc định false. Nếu cần bỏ cách ly, phải có quy trình tường minh riêng; không làm việc đó ngầm trong R3.
+- Giữ payload, hash, verification và lịch sử ngoài các thay đổi cần thiết cho finding.
+
 ## Regression tests bắt buộc
 
 1. Save mock CodeSet không có suffix _seed.
@@ -375,6 +446,9 @@ Suffix _seed chỉ có thể là defense-in-depth, không phải source of truth
 7. Save/update lại CodeSet/Revision không reset quarantine flag.
 8. Normal legitimate learned revision vẫn chạy.
 9. Existing DB migration giữ dữ liệu và flags đúng.
+10. Tạo CodeSet có appliance/revision con, save lại cùng ID -> cả hai code_set_id giữ nguyên.
+11. Revision đã có observation, save lại cùng ID -> observation và binding còn nguyên.
+12. Save/re-import object được đọc trước khi quarantine -> không xóa cờ vừa được bật trong DB.
 
 Không chỉ test list_code_sets(include_quarantined=False) ngay sau UPDATE trong cùng process.
 
@@ -455,7 +529,7 @@ Origin: http://127.0.0.1:8765
 
 cả hai đều allowed, scheme và port giống nhau, nên request vẫn qua dù origin host khác Host header.
 
-Nếu requirement là **exact scheme/host/port**, implementation hiện chưa đủ.
+Yêu cầu trước đó diễn đạt bằng allowlist scheme/host/port; allowlist không tự đồng nghĩa với Origin trùng Host. R3 chốt policy **strict same-origin** cho mutation có Origin: so khớp chính xác scheme/hostname/effective port của request, đồng thời vẫn kiểm allowed hosts.
 
 ## Yêu cầu sửa
 
@@ -484,12 +558,15 @@ Giữ CSRF validation hiện tại.
 - wrong scheme -> 403.
 - wrong port -> 403.
 - IPv6 exact loopback form được normalize đúng.
+- Host không ghi port và Origin ghi port mặc định 80/443 tương ứng -> pass; Origin dùng port khác -> 403.
 
 Không nới allowed host chỉ để test xanh.
 
+Test cũ đang dùng Host=testserver nhưng Origin=127.0.0.1 và kỳ vọng được chấp nhận phải đổi fixture thành cùng origin cho ca hợp lệ. Giữ/thêm ca cross-host bị chặn; đây là cập nhật test theo policy R3, không nới assertion để giữ behavior cũ.
+
 ---
 
-# V3-07 — P2: Legacy ledger có payload_digest=NULL vẫn có thể replay sai payload
+# V3-07 — P1: Race idempotency gửi lặp và legacy ledger NULL digest trả kết quả sai binding
 
 ## Hiện trạng
 
@@ -502,6 +579,8 @@ existing.payload_digest and existing.payload_digest != current_digest
 ~~~
 
 Nếu digest cũ NULL, cùng request_id có thể được request mới reuse và route trả ledger result cũ mà không chứng minh cùng appliance/gateway/button/revision.
+
+Ngoài legacy row, đã tái hiện hai request đồng thời cùng request_id và cùng payload gọi provider.send_code() hai lần. Cả hai qua lần lookup đầu khi chưa có ledger; prepare_command() có thể trả existing entry cho request thứ hai, nhưng route bỏ qua giá trị trả về rồi tiếp tục DISPATCHING/send. Gateway lock chỉ tuần tự hóa hai lần gửi, không bảo đảm gửi một lần.
 
 ## Yêu cầu sửa
 
@@ -526,6 +605,18 @@ Nếu tất cả binding giống nhau:
 
 Ưu tiên behavior an toàn hơn backward compatibility.
 
+### Atomic claim và quyền dispatch
+
+Áp dụng cho cả row mới và legacy:
+
+- Claim request_id phải atomic ở storage; kết quả phải phân biệt rõ claimed_new với existing entry.
+- Chỉ request claim thành công mới được chuyển DISPATCHING và gọi provider. Request nhận existing entry chỉ trả trạng thái/kết quả ledger, kể cả khi entry còn PREPARED/DISPATCHING hoặc đã UNKNOWN.
+- Cùng request_id + cùng binding/digest -> tối đa một provider call trong toàn bộ các request đồng thời/retry. Request đến sau có thể thấy trạng thái đang xử lý, không cần chờ hardware để giả định đã DELIVERED.
+- Cùng request_id + binding/digest khác -> 409, không provider call bổ sung.
+- So sánh binding/digest phải áp dụng ở cả lookup ban đầu và nhánh tranh chấp INSERT/unique constraint. Legacy NULL digest luôn theo quy tắc đối chiếu binding bên trên.
+- Route phải chuyển lỗi conflict do storage trả về thành 409; không để ValueError hoặc ngoại lệ conflict tương đương rơi thành 500.
+- Không tự replay row tồn tại để xử lý việc worker chết giữa claim và dispatch; giữ recovery hiện có.
+
 ## Regression tests bắt buộc
 
 Fixture DB legacy với payload_digest=NULL:
@@ -537,11 +628,18 @@ Fixture DB legacy với payload_digest=NULL:
 5. different revision -> 409.
 6. provider không được gọi trong conflict cases.
 
-Thêm race test nếu logic claim thay đổi.
+Race test là bắt buộc:
+
+7. Dùng Event/barrier để hai request cùng request_id, cùng digest đều thấy lookup ban đầu chưa có row -> chỉ một claim mới, một ledger row và provider call count = 1.
+8. Hai request hợp lệ cùng request_id nhưng khác binding/digest -> request thắng claim được xử lý, request còn lại 409; provider call count = 1.
+9. Existing entry PREPARED/DISPATCHING/DELIVERED/UNKNOWN -> retry không tạo provider call mới.
+10. Conflict từ storage trong nhánh race -> API trả 409, không 500.
+
+Chạy qua route và storage thật với DB tạm, provider giả lập; không mock claim thành công cho mọi request rồi kết luận đã chống race. Không dùng sleep để hy vọng tạo được interleaving.
 
 ---
 
-# V3-08 — P3 / AC-28: Provider capability interface chưa phải provider-neutral end-to-end
+# V3-08 — P2 routing guard / P3 AC-28: Provider capability interface chưa phải provider-neutral end-to-end
 
 ## Hiện trạng
 
@@ -565,15 +663,22 @@ else -> BroadlinkProvider
 
 và chưa dispatch theo gateway.provider.
 
-Do đó **không được tuyên bố AC-28 hoàn tất end-to-end** nếu acceptance yêu cầu nhiều provider hoặc neutral routing.
+AC-28 trong [kế hoạch gốc](AGENT_FIX_DASHBOARD_REVIEW.md) yêu cầu core có capability/action/state contract không bắt mọi provider dùng IR. T35 yêu cầu generic fake provider có observed state, không MAC/raw IR. Vì vậy factory chỉ chọn được Broadlink/Mock chưa đủ bằng chứng AC-28 completed.
 
 ## Yêu cầu
 
 Không cần tích hợp Tuya/MQTT thật trong R3 nếu ngoài scope.
 
-Nhưng phải làm một trong hai:
+### Routing guard bắt buộc cho cả hai option
 
-### Option A — hoàn tất neutral provider factory
+- Provider không được hỗ trợ/không xác định -> lỗi rõ trước hardware I/O; không silently chọn Broadlink.
+- Trong real mode khi chỉ hỗ trợ Broadlink, gateway.provider khác broadlink phải bị từ chối. Gateway provider=mock chỉ được dùng trong explicit mock mode; mock mode không tự hợp thức hóa provider không xác định.
+- Action send/learn phải được kiểm capability trước dispatch/học mã; thiếu capability -> lỗi rõ và 0 I/O. Nếu check gateway không được hỗ trợ thì trả lỗi trước gọi adapter.
+- Guard phải áp dụng cho send, learn và check. Không tạo ledger DISPATCHING hoặc learning job bị treo khi bị từ chối.
+
+Guard này là P2 cần đóng trong R3. Phần mở rộng kiến trúc AC-28 là P3, chọn một trong hai hướng sau:
+
+### Option A — hoàn tất provider routing và chứng minh contract AC-28
 
 Tạo resolver/factory:
 
@@ -587,24 +692,32 @@ Unknown provider -> 422/501/503 rõ ràng, không silently dùng Broadlink.
 
 Route send/learn/check dùng neutral contract/capability check thay vì hardcode Broadlink path.
 
+Thêm generic fake provider không cần MAC/raw IR, thực hiện một action không phải IR và trả observed state qua cùng contract của core. Test phải đi qua luồng xử lý chung, không chỉ instantiate provider hoặc assert factory trả đúng class. Đây là bằng chứng T35 bắt buộc trước khi đánh dấu AC-28 completed.
+
 ### Option B — scope AC-28 trung thực
 
 Nếu chưa muốn refactor provider routing trong R3:
 
 - giữ interface hiện tại;
+- hoàn tất routing guard bắt buộc ở trên, không cần xây factory tổng quát;
 - cập nhật status/docs rằng AC-28 mới là “interface foundation / partial”;
 - không đánh dấu completed.
 
 Không giả lập hỗ trợ provider chưa có.
 
-## Tests nếu chọn Option A
+## Tests bắt buộc cho cả hai option
 
-- gateway provider=broadlink -> Broadlink provider.
-- provider=mock chỉ khi policy cho phép explicit mock.
-- unknown provider -> error rõ, 0 hardware calls.
+- real mode, gateway provider=broadlink -> Broadlink adapter.
+- provider=mock chỉ khi explicit mock được bật; real mode từ chối với 0 hardware calls.
+- unknown/unsupported provider -> error rõ ở send/learn/check, 0 hardware calls, không có ledger/job mắc kẹt.
 - provider thiếu IR_SEND -> send bị chặn.
 - provider thiếu IR_LEARN -> learning bị chặn.
+
+## Tests bổ sung nếu chọn Option A
+
 - route không cần biết concrete provider class.
+- generic fake provider không có MAC/raw IR -> core nhận action/result/observed state đúng contract T35.
+- Chỉ có test factory Broadlink/Mock pass -> chưa đủ để đánh dấu AC-28 completed.
 
 ---
 
@@ -630,6 +743,8 @@ Giữ nguyên behavior tốt đã có ở 89d38c5:
 
 Không xóa hoặc làm yếu test Round 2 để suite xanh.
 
+Riêng fixture Origin hợp lệ được cập nhật theo strict same-origin như V3-06; các ca từ chối origin không hợp lệ phải được giữ hoặc siết chặt.
+
 ---
 
 # Test strategy
@@ -646,6 +761,10 @@ Không:
 - dùng sleep 120 giây thật.
 
 Dùng temp DB/temp WAV/mock provider/mock capture.
+
+Fixture recording phải dùng temp root cho recordings, manifest, labels/sessions và lock. Không để constructor/recovery hoặc singleton khi import quét/ghi recordings thật. Suite recording hiện có còn tạo dữ liệu trong recordings của repo; chuyển các fixture đó sang temp root khi bổ sung test R3.
+
+Mốc kiểm tra trên mã nguồn 89d38c5 trước khi sửa R3: 51 targeted tests (recording 6, API 16, devices 17, wake lab 12) và 111 mock tests đều pass, không skip. Các ca tái hiện R3 vẫn lỗi; mốc 162 test này không chứng minh R3 đã hoàn tất và không thay thế regression tests mới.
 
 ## Targeted tests tối thiểu
 
@@ -669,30 +788,17 @@ git diff --check
 python3 -m compileall -q src scripts tests
 ~~~
 
-Nếu môi trường project có dependencies dashboard:
+Repo hiện tách hai môi trường: .venv-dashboard có FastAPI/Starlette/httpx nhưng không có numpy; .venv có numpy nhưng không có dashboard dependencies. Dùng đúng interpreter để tránh suite API bị skip hoặc DTW không chạy:
 
 ~~~bash
-python3 -m unittest discover -s tests -p 'test_recording_service.py' -v
-python3 -m unittest discover -s tests -p 'test_dashboard_api.py' -v
-python3 -m unittest discover -s tests -p 'test_devices.py' -v
-python3 -m unittest discover -s tests -p 'test_wake_lab.py' -v
-~~~
-
-Sau đó chạy suite mock hiện có:
-
-~~~bash
-python3 scripts/run_tests.py --mock
-~~~
-
-Nếu repo có .venv, ưu tiên interpreter có đủ dependency:
-
-~~~bash
-.venv/bin/python -m unittest discover -s tests -p 'test_recording_service.py' -v
-.venv/bin/python -m unittest discover -s tests -p 'test_dashboard_api.py' -v
+.venv-dashboard/bin/python -m unittest discover -s tests -p 'test_recording_service.py' -v
+.venv-dashboard/bin/python -m unittest discover -s tests -p 'test_dashboard_api.py' -v
 .venv/bin/python -m unittest discover -s tests -p 'test_devices.py' -v
 .venv/bin/python -m unittest discover -s tests -p 'test_wake_lab.py' -v
 .venv/bin/python scripts/run_tests.py --mock
 ~~~
+
+Nếu dùng môi trường khác, kiểm tra dependencies trước và ghi rõ interpreter thực tế. Test tích hợp API + DTW có thể dùng dashboard interpreter gọi audio worker trong .venv; không mock bỏ toàn bộ chuỗi chỉ vì hai môi trường tách biệt.
 
 Nếu Node có sẵn:
 
@@ -702,6 +808,8 @@ node --check src/smart_hub/dashboard/static/app.js
 
 Không cài/download gì chỉ để chạy test. Nếu dependency thiếu, ghi rõ SKIP/NOT RUN và lý do.
 
+Ghi nhận SKIP/NOT RUN không đồng nghĩa acceptance tương ứng đã đạt. Test cần chứng minh một finding mà chưa chạy được thì finding đó vẫn thiếu validation; không đánh dấu R3 completed chỉ dựa vào các suite còn lại xanh.
+
 ---
 
 # Acceptance checklist Round 3
@@ -709,21 +817,30 @@ Không cài/download gì chỉ để chạy test. Nếu dependency thiếu, ghi 
 Trước khi coi R3 hoàn tất, phải chứng minh:
 
 - [ ] Dashboard manual advance take 1 hoạt động với session_id + take_sequence=1.
+- [ ] Advance thiếu/rỗng/null/sai kiểu binding -> 422, không side effect; wrong session/stale/future take -> 409.
 - [ ] Stale advance không thể kích nhầm take sau.
 - [ ] DTW missing/corrupt/SHA-mismatch sample -> ERROR, không TP/FP/TN/FN.
 - [ ] DTW ERROR vẫn giữ denominator.
+- [ ] DTW accounting và metrics đúng công thức V3-02 cho ERROR ở từng lớp; denominator bằng 0 -> null/N/A.
+- [ ] In-process/subprocess đều lưu JSON/Markdown khi có sample ERROR; POST và GET sau reload giữ completed_with_errors cùng has_processing_errors=true.
 - [ ] DTW Markdown report hiển thị đúng metrics, không render fake STT 0/0.
 - [ ] Mixed STT + DTW report không làm mất metrics của engine nào.
 - [ ] Quarantine flags survive save/reload/restart.
+- [ ] Save/upsert cùng ID không làm mất code_set_id/binding/observation; stale object/re-import không reset cờ quarantine.
 - [ ] Mock/quarantined code không thể dispatch tới real hardware dù ID không có _seed.
 - [ ] Lease timeout kết thúc ở INTERRUPTED, không bị finalize thành COMPLETED.
 - [ ] Origin host phải exact với Host hostname, ngoài scheme/port.
 - [ ] Legacy ledger NULL digest + binding khác -> 409.
+- [ ] Hai request đồng thời cùng request_id chỉ có một claim mới và một provider call; khác binding/digest -> 409, không gửi bổ sung.
+- [ ] Existing ledger ở các trạng thái đã nêu không bị retry dispatch; conflict từ storage không trở thành 500.
 - [ ] Provider capability status được xử lý trung thực: factory end-to-end hoặc AC-28 ghi partial.
+- [ ] Cả hai option V3-08 đều chặn unknown/unsupported provider và capability thiếu trước I/O, không có ledger/job mắc kẹt.
+- [ ] Nếu AC-28 completed, có test T35 qua core với generic fake provider không MAC/raw IR và có observed state.
 - [ ] Không regression V2-01..V2-19 đã sửa đúng.
 - [ ] git diff --check sạch.
 - [ ] Compileall sạch.
-- [ ] Targeted test suites pass hoặc có skip có lý do rõ.
+- [ ] Targeted/mock suites và regression tests R3 pass; finding có test SKIP/NOT RUN vẫn ghi rõ thiếu validation.
+- [ ] Fixture recording nằm trong temp root, không quét/ghi dữ liệu thu thật khi test.
 - [ ] Không có hardware/network side effect trong test.
 
 ---
@@ -781,12 +898,12 @@ Khi hoàn tất, báo:
 1. Commit SHA mới.
 2. Danh sách files changed.
 3. Cách fix V3-01 đến V3-08.
-4. Semantics cuối của recording take_sequence.
-5. Semantics DTW ERROR/denominator.
-6. Report schema cho STT/DTW.
-7. Cách quarantine được persist sau reload.
-8. Cách xử lý legacy ledger NULL digest.
-9. AC-28 là completed hay partial, với bằng chứng.
+4. Semantics recording take_sequence, binding bắt buộc và HTTP 422/409.
+5. Semantics DTW ERROR/denominator, công thức metrics và coverage/error_rate.
+6. Report schema STT/DTW, status/has_processing_errors của worker/API và bằng chứng report còn đủ sau reload.
+7. Cách quarantine được persist sau reload/upsert, giữ binding và observation history.
+8. Cách xử lý legacy ledger NULL digest, atomic claim và provider call count trong race tests.
+9. AC-28 là completed hay partial; bằng chứng routing guard và T35 nếu completed.
 10. Exact commands đã chạy.
 11. Pass/fail/skip counts.
 12. Test nào không chạy và lý do.

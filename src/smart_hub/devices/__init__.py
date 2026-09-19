@@ -12,7 +12,13 @@ from .base import (
     GatewayStatus,
     Observation,
     ObservationOutcome,
+    ProviderCapability,
+    ProviderUnavailableError,
+    UnsupportedProviderError,
+    ProviderCapabilityError,
+    LedgerConflictError,
 )
+from .providers.factory import get_provider_for_gateway
 from .storage import DeviceStorage
 
 __all__ = [
@@ -29,4 +35,10 @@ __all__ = [
     "GatewayStatus",
     "Observation",
     "ObservationOutcome",
+    "ProviderCapability",
+    "ProviderUnavailableError",
+    "UnsupportedProviderError",
+    "ProviderCapabilityError",
+    "LedgerConflictError",
+    "get_provider_for_gateway",
 ]

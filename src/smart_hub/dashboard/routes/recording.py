@@ -1,10 +1,10 @@
 """Audio recording session control endpoints for child and adult voice study."""
-from typing import Optional
+from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from ...child_study import NEGATIVE_PRESETS
-from ...recording import RecordingService, SessionConfig
+from ...recording import RecordingService, RecordingState, SessionConfig
 
 router = APIRouter(prefix="/api/recording", tags=["Recording"])
 
@@ -70,8 +70,22 @@ class StartRecordingRequest(BaseModel):
 
 
 class AdvanceTakeRequest(BaseModel):
-    session_id: Optional[str] = Field(default=None, description="Mã phiên thu cần advance")
-    take_sequence: Optional[int] = Field(default=None, description="Số thứ tự lượt thu dự kiến bắt đầu")
+    session_id: str = Field(..., description="Mã phiên thu cần advance")
+    take_sequence: int = Field(..., description="Số thứ tự lượt thu dự kiến bắt đầu")
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, v: Any) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError("session_id bắt buộc và không được để trống")
+        return v.strip()
+
+    @field_validator("take_sequence", mode="before")
+    @classmethod
+    def validate_take_sequence(cls, v: Any) -> int:
+        if type(v) is not int or isinstance(v, bool) or v <= 0:
+            raise ValueError("take_sequence phải là số nguyên dương (> 0) và không nhận chuỗi, float hoặc boolean")
+        return v
 
 
 @router.get("/status")
@@ -122,14 +136,19 @@ def start_recording(req: StartRecordingRequest):
 
 
 @router.post("/advance")
-def advance_take(req: Optional[AdvanceTakeRequest] = None):
+def advance_take(req: AdvanceTakeRequest):
+    if RECORDING_SERVICE.state != RecordingState.WAITING_USER:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Chỉ có thể bấm lượt tiếp theo khi trạng thái là 'waiting_user' (hiện tại: {RECORDING_SERVICE.state.value})",
+        )
     try:
-        sess_id = req.session_id if req else None
-        seq = req.take_sequence if req else None
-        RECORDING_SERVICE.advance(session_id=sess_id, take_sequence=seq)
+        RECORDING_SERVICE.advance(session_id=req.session_id, take_sequence=req.take_sequence)
         return {"status": "ok", "message": "Đã bắt đầu lượt thu tiếp theo."}
-    except Exception as exc:
+    except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
 
 @router.post("/stop")

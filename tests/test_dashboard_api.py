@@ -17,7 +17,13 @@ try:
     from smart_hub.config import ROOT
     from smart_hub.dashboard.app import create_app
     from smart_hub.dashboard.security import CSRF_TOKEN, _ACTIVE_CSRF_TOKENS
-    from smart_hub.devices import CodeRevision, DeviceStorage, GatewayInfo
+    from smart_hub.devices import (
+        Appliance,
+        ApplianceCategory,
+        CodeRevision,
+        DeviceStorage,
+        GatewayInfo,
+    )
     HAS_DASHBOARD_DEPS = True
 except ImportError:
     HAS_DASHBOARD_DEPS = False
@@ -52,11 +58,21 @@ class DashboardAPITests(unittest.TestCase):
         self.test_wav_sha256 = hashlib.sha256(self.test_wav_path.read_bytes()).hexdigest()
         self.test_wav_rel = str(self.test_wav_path.relative_to(ROOT))
 
-        self.app = create_app(allowed_hosts={"testserver", "localhost", "127.0.0.1"})
+        self.app = create_app(allowed_hosts={"testserver", "localhost", "127.0.0.1", "::1", "[::1]"})
         self.client = TestClient(self.app, base_url="http://testserver")
         self.headers = {"X-CSRF-Token": CSRF_TOKEN}
 
+        # Isolate recording service root to temporary directory
+        from smart_hub.dashboard.routes.recording import RECORDING_SERVICE
+        self.rec_root = Path(self.tmp_dir.name) / "recordings"
+        self.rec_root.mkdir(parents=True, exist_ok=True)
+        self.orig_rec_root = RECORDING_SERVICE.recordings_root
+        RECORDING_SERVICE.recordings_root = self.rec_root
+
     def tearDown(self):
+        from smart_hub.dashboard.routes.recording import RECORDING_SERVICE
+        RECORDING_SERVICE.stop()
+        RECORDING_SERVICE.recordings_root = self.orig_rec_root
         self.env_patcher.stop()
         self.patcher.stop()
         self.tmp_dir.cleanup()
@@ -98,8 +114,9 @@ class DashboardAPITests(unittest.TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertIn("Origin 'http://127.evil.test:8765' is forbidden", res.text)
 
-        # Valid loopback origin with CSRF is allowed
-        res_ok = self.client.post(
+        # Valid loopback origin matching host exactly with CSRF is allowed
+        client_127 = TestClient(self.app, base_url="http://127.0.0.1:8765")
+        res_ok = client_127.post(
             "/api/gateways",
             json={"id": "gw_origin_test"},
             headers={"Origin": "http://127.0.0.1:8765", "X-CSRF-Token": CSRF_TOKEN},
@@ -635,6 +652,223 @@ class DashboardAPITests(unittest.TestCase):
             res = self.client.post("/api/gateway-discoveries", headers=self.headers)
             self.assertEqual(res.status_code, 503)
             self.assertIn("Broadlink SDK", res.text)
+
+    def test_v3_01_api_advance_take_sequence_contract(self):
+        # 1. Start mock recording session with manual_advance=True, takes_planned=2
+        res = self.client.post("/api/recording/start", json={
+            "speaker": "child",
+            "speaker_id": "child_v301_api",
+            "split": "pilot",
+            "phrase": "Maika ơi",
+            "label": "positive",
+            "takes_planned": 2,
+            "manual_advance": True,
+            "mock": True,
+        }, headers=self.headers)
+        self.assertEqual(res.status_code, 200)
+
+        # Wait for WAITING_USER and current_take == 1
+        start = time.monotonic()
+        status_data = None
+        while time.monotonic() - start < 3.0:
+            st_res = self.client.get("/api/recording/status")
+            status_data = st_res.json()
+            if status_data.get("state") == "waiting_user" and status_data.get("current_take") == 1:
+                break
+            time.sleep(0.02)
+
+        self.assertEqual(status_data["state"], "waiting_user")
+        self.assertEqual(status_data["current_take"], 1)
+        session_id = status_data["session_id"]
+        self.assertTrue(bool(session_id))
+
+        # 2. Strict validation 422: empty body, missing/null fields, bad types
+        bad_payloads = [
+            {},
+            {"take_sequence": 1},
+            {"session_id": None, "take_sequence": 1},
+            {"session_id": "   ", "take_sequence": 1},
+            {"session_id": session_id},
+            {"session_id": session_id, "take_sequence": None},
+            {"session_id": session_id, "take_sequence": 0},
+            {"session_id": session_id, "take_sequence": -1},
+            {"session_id": session_id, "take_sequence": "1"},
+            {"session_id": session_id, "take_sequence": 1.5},
+            {"session_id": session_id, "take_sequence": True},
+        ]
+        for p in bad_payloads:
+            r = self.client.post("/api/recording/advance", json=p, headers=self.headers)
+            self.assertEqual(r.status_code, 422, f"Expected 422 for payload: {p}, got {r.status_code}")
+
+        # Verify state is still WAITING_USER at take 1 after all 422 rejections
+        st = self.client.get("/api/recording/status").json()
+        self.assertEqual(st["state"], "waiting_user")
+        self.assertEqual(st["current_take"], 1)
+
+        # 3. Conflict 409: wrong session or future take
+        r_wrong_session = self.client.post("/api/recording/advance", json={
+            "session_id": "wrong_session_999",
+            "take_sequence": 1,
+        }, headers=self.headers)
+        self.assertEqual(r_wrong_session.status_code, 409)
+
+        r_future_take = self.client.post("/api/recording/advance", json={
+            "session_id": session_id,
+            "take_sequence": 5,
+        }, headers=self.headers)
+        self.assertEqual(r_future_take.status_code, 409)
+
+        # 4. Valid advance for take 1
+        r_adv1 = self.client.post("/api/recording/advance", json={
+            "session_id": session_id,
+            "take_sequence": 1,
+        }, headers=self.headers)
+        self.assertEqual(r_adv1.status_code, 200)
+
+        # Wait for take 2 WAITING_USER
+        start = time.monotonic()
+        while time.monotonic() - start < 4.0:
+            st = self.client.get("/api/recording/status").json()
+            if st.get("state") == "waiting_user" and st.get("current_take") == 2:
+                break
+            time.sleep(0.02)
+        self.assertEqual(st["state"], "waiting_user")
+        self.assertEqual(st["current_take"], 2)
+
+        # 5. Stale advance take 1 rejected with 409
+        r_stale = self.client.post("/api/recording/advance", json={
+            "session_id": session_id,
+            "take_sequence": 1,
+        }, headers=self.headers)
+        self.assertEqual(r_stale.status_code, 409)
+
+        # 6. Advance take 2 succeeds
+        r_adv2 = self.client.post("/api/recording/advance", json={
+            "session_id": session_id,
+            "take_sequence": 2,
+        }, headers=self.headers)
+        self.assertEqual(r_adv2.status_code, 200)
+
+        # Wait for completed
+        start = time.monotonic()
+        while time.monotonic() - start < 4.0:
+            st = self.client.get("/api/recording/status").json()
+            if st.get("state") == "completed":
+                break
+            time.sleep(0.02)
+        self.assertEqual(st["state"], "completed")
+
+        # 7. Advance when not in WAITING_USER returns 409
+        r_not_waiting = self.client.post("/api/recording/advance", json={
+            "session_id": session_id,
+            "take_sequence": 2,
+        }, headers=self.headers)
+        self.assertEqual(r_not_waiting.status_code, 409)
+
+    def test_v3_06_strict_same_origin(self):
+        # 1. Host localhost + Origin 127.0.0.1 (same port 8765) -> 403
+        c_local = TestClient(self.app, base_url="http://localhost:8765")
+        res1 = c_local.post(
+            "/api/gateways",
+            json={"id": "gw_origin_mismatch1"},
+            headers={"Origin": "http://127.0.0.1:8765", "X-CSRF-Token": CSRF_TOKEN},
+        )
+        self.assertEqual(res1.status_code, 403)
+        self.assertIn("does not match request host", res1.text.lower())
+
+        # 2. Host 127.0.0.1 + Origin localhost (same port 8765) -> 403
+        c_127 = TestClient(self.app, base_url="http://127.0.0.1:8765")
+        res2 = c_127.post(
+            "/api/gateways",
+            json={"id": "gw_origin_mismatch2"},
+            headers={"Origin": "http://localhost:8765", "X-CSRF-Token": CSRF_TOKEN},
+        )
+        self.assertEqual(res2.status_code, 403)
+
+        # 3. Wrong scheme (https vs http) -> 403
+        res3 = c_127.post(
+            "/api/gateways",
+            json={"id": "gw_origin_mismatch3"},
+            headers={"Origin": "https://127.0.0.1:8765", "X-CSRF-Token": CSRF_TOKEN},
+        )
+        self.assertEqual(res3.status_code, 403)
+
+        # 4. Wrong port (9999 vs 8765) -> 403
+        res4 = c_127.post(
+            "/api/gateways",
+            json={"id": "gw_origin_mismatch4"},
+            headers={"Origin": "http://127.0.0.1:9999", "X-CSRF-Token": CSRF_TOKEN},
+        )
+        self.assertEqual(res4.status_code, 403)
+
+        # 5. Matching host/scheme/port -> passes security (not 403)
+        res_ok = c_127.post(
+            "/api/gateways",
+            json={"id": "gw_origin_ok"},
+            headers={"Origin": "http://127.0.0.1:8765", "X-CSRF-Token": CSRF_TOKEN},
+        )
+        self.assertNotEqual(res_ok.status_code, 403)
+
+    def test_v3_08_unknown_provider_rejected_at_routing_guard(self):
+        storage = DeviceStorage()
+        gw_unknown = GatewayInfo(
+            id="gw_unknown_provider",
+            provider="some_alien_provider",
+            model_name="alien_box",
+            ip_address="192.168.1.99",
+            mac="99:88:77:66:55:44",
+            devtype=0x9999,
+        )
+        storage.save_gateway(gw_unknown)
+
+        app_unknown = Appliance(
+            id="app_unknown_provider",
+            gateway_id=gw_unknown.id,
+            name="Alien Appliance",
+            category=ApplianceCategory.CUSTOM,
+            room="Phòng Khách",
+            brand="Alien",
+            model="X1",
+        )
+        storage.save_appliance(app_unknown)
+
+        raw_payload = b"\x01\x02\x03\x04"
+        rev = CodeRevision(
+            id="rev_unknown_provider",
+            code_set_id=None,
+            appliance_id=app_unknown.id,
+            button_key="power",
+            button_name="Power",
+            payload_base64=base64.b64encode(raw_payload).decode("ascii"),
+            payload_hash=CodeRevision.compute_hash(raw_payload),
+            source_type="learned",
+            is_verified=True,
+        )
+        storage.save_code_revision(rev)
+
+        # 1. Action dispatch rejected with 422
+        res_act = self.client.post(f"/api/devices/{app_unknown.id}/actions", json={
+            "request_id": "req_alien_1",
+            "button_key": "power",
+            "code_revision_id": rev.id,
+        }, headers=self.headers)
+        self.assertEqual(res_act.status_code, 422)
+        self.assertIn("không được hỗ trợ", res_act.text)
+
+        # No ledger entry stuck in dispatching
+        self.assertIsNone(storage.get_ledger_entry("req_alien_1"))
+
+        # 2. Check gateway rejected with 422
+        res_chk = self.client.post(f"/api/gateways/{gw_unknown.id}/checks", headers=self.headers)
+        self.assertEqual(res_chk.status_code, 422)
+
+        # 3. Learning job rejected with 422
+        res_lrn = self.client.post(f"/api/devices/{app_unknown.id}/learning-jobs", json={
+            "button_key": "power",
+            "button_name": "Power",
+            "timeout_seconds": 2.0,
+        }, headers=self.headers)
+        self.assertEqual(res_lrn.status_code, 422)
 
 
 if __name__ == "__main__":

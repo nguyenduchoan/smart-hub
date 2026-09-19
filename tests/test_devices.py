@@ -18,8 +18,14 @@ from smart_hub.devices import (
     GatewayCheckResult,
     GatewayInfo,
     GatewayStatus,
+    LedgerConflictError,
     Observation,
     ObservationOutcome,
+    ProviderCapability,
+    ProviderCapabilityError,
+    ProviderUnavailableError,
+    UnsupportedProviderError,
+    get_provider_for_gateway,
 )
 from smart_hub.devices.catalogs.importer import (
     CatalogValidationError,
@@ -29,6 +35,7 @@ from smart_hub.devices.catalogs.importer import (
     validate_broadlink_payload,
 )
 from smart_hub.devices.catalogs.seed_data import get_seed_code_sets
+from smart_hub.devices.providers.generic_fake_provider import GenericFakeProvider
 from smart_hub.devices.providers.mock_provider import MockDeviceProvider
 
 
@@ -314,6 +321,213 @@ class DeviceStorageTests(unittest.TestCase):
         bak_files = list(self.storage.db_path.parent.glob("*.bak_*"))
         self.assertGreater(len(bak_files), 0)
 
+    def test_v3_04_quarantine_flags_survive_save_reload_and_upsert_preserves_relations(self):
+        # 1. Create and save CodeSet with is_quarantined=True
+        cs = CodeSet(
+            id="cs_quarantine_test",
+            category=ApplianceCategory.TV,
+            brand="TestBrand",
+            models=["TestModel"],
+            source_name="custom",
+            source_url="",
+            source_revision="1",
+            license="MIT",
+            encoding="broadlink_base64",
+            hash="hash_123",
+            codes={"power": "JgAIAA=="},
+            is_quarantined=True,
+        )
+        self.storage.save_code_set(cs)
+
+        # Create Appliance linked to this CodeSet
+        gw = GatewayInfo(id="gw_q", provider="mock", model_name="RM4", ip_address="127.0.0.1", mac="11:22:33:44:55:66", devtype=0x51da)
+        self.storage.save_gateway(gw)
+        app = Appliance(
+            id="app_q_test",
+            name="Quarantine TV",
+            category=ApplianceCategory.TV,
+            room="Living Room",
+            brand="TestBrand",
+            model="TestModel",
+            gateway_id="gw_q",
+            code_set_id="cs_quarantine_test",
+        )
+        self.storage.save_appliance(app)
+
+        # Create CodeRevision with is_mock_seed=True
+        raw_ir = b"\x26\x00\x08\x00\x11\x22\x33\x44"
+        rev = CodeRevision(
+            id="rev_q_test",
+            code_set_id="cs_quarantine_test",
+            appliance_id="app_q_test",
+            button_key="power",
+            button_name="Power",
+            payload_base64=base64.b64encode(raw_ir).decode("ascii"),
+            payload_hash=CodeRevision.compute_hash(raw_ir),
+            source_type="seed",
+            is_verified=False,
+            is_mock_seed=True,
+        )
+        self.storage.save_code_revision(rev)
+
+        # Add Observation to revision
+        obs = Observation(
+            id="obs_q_test",
+            appliance_id="app_q_test",
+            code_revision_id="rev_q_test",
+            button_key="power",
+            outcome=ObservationOutcome.ACCURATE,
+            user_notes="Observed power toggled",
+        )
+        self.storage.record_observation(obs)
+
+        # Verify initial persisted state
+        loaded_cs = self.storage.get_code_set("cs_quarantine_test")
+        self.assertTrue(loaded_cs.is_quarantined)
+        loaded_rev = self.storage.get_code_revision("rev_q_test")
+        self.assertTrue(loaded_rev.is_mock_seed)
+
+        # 2. Upsert CodeSet with stale object (is_quarantined=False) -> Flag must remain True!
+        cs_stale = CodeSet(
+            id="cs_quarantine_test",
+            category=ApplianceCategory.TV,
+            brand="TestBrand",
+            models=["TestModel"],
+            source_name="custom",
+            source_url="",
+            source_revision="1",
+            license="MIT",
+            encoding="broadlink_base64",
+            hash="hash_123",
+            codes={"power": "JgAIAA=="},
+            is_quarantined=False,
+        )
+        self.storage.save_code_set(cs_stale)
+        reloaded_cs = self.storage.get_code_set("cs_quarantine_test")
+        self.assertTrue(reloaded_cs.is_quarantined, "Quarantine flag must NOT be reset by re-import or upsert")
+
+        # 3. Upsert CodeRevision with stale object (is_mock_seed=False) -> Flag must remain True!
+        rev_stale = CodeRevision(
+            id="rev_q_test",
+            code_set_id="cs_quarantine_test",
+            appliance_id="app_q_test",
+            button_key="power",
+            button_name="Power",
+            payload_base64=base64.b64encode(raw_ir).decode("ascii"),
+            payload_hash=CodeRevision.compute_hash(raw_ir),
+            source_type="seed",
+            is_verified=False,
+            is_mock_seed=False,
+        )
+        self.storage.save_code_revision(rev_stale)
+        reloaded_rev = self.storage.get_code_revision("rev_q_test")
+        self.assertTrue(reloaded_rev.is_mock_seed, "is_mock_seed must NOT be reset by re-import or upsert")
+
+        # 4. Verify relations and observation survived upsert (no CASCADE deletion or SET NULL)
+        reloaded_app = self.storage.get_appliance("app_q_test")
+        self.assertEqual(reloaded_app.code_set_id, "cs_quarantine_test")
+        obs_list = self.storage.list_observations("app_q_test")
+        self.assertEqual(len(obs_list), 1)
+        self.assertEqual(obs_list[0].id, "obs_q_test")
+
+    def test_v3_07_legacy_ledger_null_digest_conflict_handling(self):
+        # Insert a legacy ledger row with payload_digest = NULL
+        with self.storage._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO command_ledger
+                (id, request_id, gateway_id, appliance_id, button_key, code_revision_id, payload_digest, state, sent_at)
+                VALUES ('cmd_legacy', 'req_legacy_null', 'gw_1', 'app_1', 'power', 'rev_1', NULL, 'delivered', datetime('now'))
+                """,
+            )
+
+        # 1. Same bindings (appliance, button, rev) -> Replay allowed, returns existing ledger
+        entry, is_new = self.storage.claim_command(
+            request_id="req_legacy_null",
+            gateway_id="gw_1",
+            appliance_id="app_1",
+            button_key="power",
+            code_revision_id="rev_1",
+            payload_digest="new_computed_digest_abc",
+        )
+        self.assertFalse(is_new)
+        self.assertEqual(entry.request_id, "req_legacy_null")
+        self.assertEqual(entry.state, CommandState.DELIVERED)
+
+        # 2. Conflict: different appliance_id -> Raises LedgerConflictError
+        with self.assertRaises(LedgerConflictError):
+            self.storage.claim_command(
+                request_id="req_legacy_null",
+                gateway_id="gw_1",
+                appliance_id="app_DIFFERENT",
+                button_key="power",
+                code_revision_id="rev_1",
+                payload_digest="new_computed_digest_abc",
+            )
+
+        # 3. Conflict: different button_key -> Raises LedgerConflictError
+        with self.assertRaises(LedgerConflictError):
+            self.storage.claim_command(
+                request_id="req_legacy_null",
+                gateway_id="gw_1",
+                appliance_id="app_1",
+                button_key="volume_up",
+                code_revision_id="rev_1",
+                payload_digest="new_computed_digest_abc",
+            )
+
+        # 4. Conflict: different code_revision_id -> Raises LedgerConflictError
+        with self.assertRaises(LedgerConflictError):
+            self.storage.claim_command(
+                request_id="req_legacy_null",
+                gateway_id="gw_1",
+                appliance_id="app_1",
+                button_key="power",
+                code_revision_id="rev_DIFFERENT",
+                payload_digest="new_computed_digest_abc",
+            )
+
+    def test_v3_07_concurrent_claim_race(self):
+        import threading
+
+        barrier = threading.Barrier(2)
+        results = []
+        errors = []
+
+        def worker(thread_idx):
+            try:
+                barrier.wait(timeout=3.0)
+                res = self.storage.claim_command(
+                    request_id="req_race_101",
+                    gateway_id="gw_race",
+                    appliance_id="app_race",
+                    button_key="speed_1",
+                    code_revision_id="rev_race",
+                    payload_digest="digest_race_hash",
+                )
+                results.append((thread_idx, res))
+            except Exception as exc:
+                errors.append((thread_idx, exc))
+
+        t1 = threading.Thread(target=worker, args=(1,))
+        t2 = threading.Thread(target=worker, args=(2,))
+        t1.start()
+        t2.start()
+        t1.join(timeout=3.0)
+        t2.join(timeout=3.0)
+
+        self.assertEqual(len(errors), 0, f"Concurrent workers encountered errors: {errors}")
+        self.assertEqual(len(results), 2)
+
+        claimed_news = [r[1][1] for r in results]
+        # Exactly one thread must have claimed new (True) and the other False
+        self.assertEqual(claimed_news.count(True), 1)
+        self.assertEqual(claimed_news.count(False), 1)
+
+        # Simulated hardware call count: only the thread with is_claimed_new=True executes
+        provider_calls = sum(1 for r in results if r[1][1] is True)
+        self.assertEqual(provider_calls, 1)
+
 
 
 class CatalogImporterTests(unittest.TestCase):
@@ -524,6 +738,60 @@ class BroadlinkProviderTests(unittest.TestCase):
         revisions = storage.list_code_revisions(appliance_id="dev_blank_1")
         self.assertEqual(len(revisions), 0)
         tmp_dir.cleanup()
+
+
+class ProviderCapabilityAndRoutingTests(unittest.TestCase):
+    def test_v3_08_generic_fake_provider_t35_contract(self):
+        gw = GatewayInfo(
+            id="gw_t35",
+            provider="generic_fake",
+            model_name="fake_iot_hub",
+            ip_address="192.168.1.200",
+            mac="",  # No MAC required for T35 generic fake provider
+            devtype=0,
+        )
+        provider = get_provider_for_gateway(gw)
+        self.assertIsInstance(provider, GenericFakeProvider)
+
+        # Capability assertions
+        self.assertTrue(provider.has_capability(ProviderCapability.DIRECT_COMMAND))
+        self.assertTrue(provider.has_capability(ProviderCapability.STATE_QUERY))
+        self.assertFalse(provider.has_capability(ProviderCapability.IR_SEND))
+        self.assertFalse(provider.has_capability(ProviderCapability.IR_LEARN))
+
+        # Check gateway
+        chk = provider.check_gateway(gw)
+        self.assertTrue(chk.is_online)
+        self.assertEqual(chk.status, GatewayStatus.ONLINE)
+
+        # Direct command dispatch returns observed state
+        res = provider.send_direct_command(gw, "set_temperature", {"temperature": 25, "mode": "cool"})
+        self.assertTrue(res["success"])
+        self.assertEqual(res["observed_state"]["temperature"], 25)
+        self.assertEqual(res["observed_state"]["mode"], "cool")
+
+        # Query state returns observed state
+        state = provider.query_state(gw)
+        self.assertEqual(state["temperature"], 25)
+        self.assertEqual(state["mode"], "cool")
+
+    def test_v3_08_provider_factory_resolution_rules(self):
+        # 1. Broadlink in mock mode returns MockDeviceProvider
+        with mock.patch.dict("os.environ", {"SMART_HUB_MOCK_HARDWARE": "1"}):
+            gw_bl = GatewayInfo(id="gw_bl", provider="broadlink", model_name="RM4", ip_address="127.0.0.1", mac="11:22:33:44:55:66", devtype=0x51da)
+            p = get_provider_for_gateway(gw_bl)
+            self.assertIsInstance(p, MockDeviceProvider)
+
+        # 2. Mock provider in real mode (SMART_HUB_MOCK_HARDWARE=0) is rejected
+        with mock.patch.dict("os.environ", {"SMART_HUB_MOCK_HARDWARE": "0"}):
+            gw_mock = GatewayInfo(id="gw_m", provider="mock", model_name="RM4", ip_address="127.0.0.1", mac="11:22:33:44:55:66", devtype=0x51da)
+            with self.assertRaises(UnsupportedProviderError):
+                get_provider_for_gateway(gw_mock)
+
+        # 3. Unknown provider is rejected
+        gw_unknown = GatewayInfo(id="gw_u", provider="unsupported_custom_provider", model_name="Box", ip_address="127.0.0.1", mac="11:22:33:44:55:66", devtype=0x51da)
+        with self.assertRaises(UnsupportedProviderError):
+            get_provider_for_gateway(gw_unknown)
 
 
 if __name__ == "__main__":

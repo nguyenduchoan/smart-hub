@@ -129,7 +129,7 @@ def run_candidate_evaluation(
     mode: str = "official",
     root: Path | None = None,
 ) -> Dict[str, Any]:
-    from smart_hub.child_study import evaluate_dataset
+    from smart_hub.child_study import evaluate_dataset, compute_file_sha256
     from smart_hub.config import ROOT
 
     eval_root = Path(root) if root else ROOT
@@ -182,62 +182,174 @@ def run_candidate_evaluation(
 
             cand_threshold = float(cand.get("threshold", 0.5))
             tp = fp = tn = fn = 0
+            pos_errors = 0
+            neg_errors = 0
 
             for idx, s in enumerate(eligible_samples):
-                wav_path = eval_root / s["source"]
-                score = 0.0
-                if wav_path.is_file():
+                source = s.get("source", "")
+                wav_path = Path(source) if Path(source).is_absolute() else (eval_root / source)
+                expected_events = int(s.get("expected_events", 1 if s.get("label") == "positive" else 0))
+                expected = (s.get("label") == "positive" and expected_events > 0)
+                expected_sha = s.get("source_sha256")
+
+                integrity_error = None
+                actual_sha = None
+
+                # Integrity checks: existence and checksum
+                if not wav_path.is_file():
+                    integrity_error = f"File not found: {wav_path}"
+                elif not expected_sha or not str(expected_sha).strip():
+                    if s.get("review_status") == "accepted":
+                        integrity_error = f"source_sha256 is missing for accepted sample: {s.get('sample_id')}"
+                    else:
+                        try:
+                            actual_sha = compute_file_sha256(wav_path)
+                        except Exception as exc:
+                            integrity_error = f"Error reading audio file: {exc}"
+                else:
+                    try:
+                        actual_sha = compute_file_sha256(wav_path)
+                        if actual_sha.lower() != str(expected_sha).lower():
+                            integrity_error = f"SHA-256 mismatch: expected {expected_sha}, got {actual_sha}"
+                    except Exception as exc:
+                        integrity_error = f"Error reading audio file: {exc}"
+
+                # WAV contract check
+                pcm = None
+                if not integrity_error:
                     try:
                         with wave.open(str(wav_path), "rb") as wf:
-                            pcm = wf.readframes(wf.getnframes())
+                            channels, sampwidth, rate, nframes, comptype, _ = wf.getparams()
+                            if (channels, sampwidth, rate, comptype) != (1, 2, 16000, "NONE"):
+                                integrity_error = f"WAV không đúng chuẩn 16kHz mono 16-bit PCM: {wav_path} (channels={channels}, sampwidth={sampwidth}, rate={rate}, comp={comptype})"
+                            else:
+                                pcm = wf.readframes(nframes)
+                                if len(pcm) == 0:
+                                    integrity_error = f"Empty PCM audio in {wav_path}"
+                    except Exception as exc:
+                        integrity_error = f"WAV unreadable or corrupt: {exc}"
+
+                # Feature extraction & DTW inference
+                if not integrity_error:
+                    try:
                         feat = features(pcm)
-                        sims = sorted([similarity(feat, t) for t in templates], reverse=True)
-                        if len(sims) >= 2:
-                            score = float(sum(sims[:2]) / 2)
-                        elif sims:
-                            score = float(sims[0])
-                    except Exception:
-                        score = 0.0
-                detected = (score >= cand_threshold)
-                expected = (s.get("label") == "positive" and int(s.get("expected_events", 1)) > 0)
+                        if not np.all(np.isfinite(feat)) or feat.ndim != 2:
+                            integrity_error = "Feature extraction produced non-finite values or invalid shape"
+                    except Exception as exc:
+                        integrity_error = f"Feature extraction failed: {exc}"
 
-                if detected and expected:
-                    tp += 1
-                elif detected and not expected:
-                    fp += 1
-                elif not detected and expected:
-                    fn += 1
+                if integrity_error:
+                    if expected:
+                        pos_errors += 1
+                    else:
+                        neg_errors += 1
+                    combined_samples[idx]["evaluations"][cand_key] = {
+                        "status": "ERROR",
+                        "is_success": False,
+                        "error": integrity_error,
+                        "score": None,
+                        "detected": None,
+                        "expected": expected,
+                        "outcome": "ERROR",
+                        "expected_sha256": expected_sha,
+                        "actual_sha256": actual_sha,
+                    }
                 else:
-                    tn += 1
+                    sims = sorted([similarity(feat, t) for t in templates], reverse=True)
+                    if len(sims) >= 2:
+                        score = float(sum(sims[:2]) / 2)
+                    elif sims:
+                        score = float(sims[0])
+                    else:
+                        score = 0.0
 
-                outcome = "TP" if (detected and expected) else ("FP" if (detected and not expected) else ("FN" if (not detected and expected) else "TN"))
-                combined_samples[idx]["evaluations"][cand_key] = {
-                    "score": round(score, 4),
-                    "detected": detected,
-                    "expected": expected,
-                    "outcome": outcome,
-                }
+                    detected = (score >= cand_threshold)
+                    if detected and expected:
+                        tp += 1
+                        outcome = "TP"
+                    elif detected and not expected:
+                        fp += 1
+                        outcome = "FP"
+                    elif not detected and expected:
+                        fn += 1
+                        outcome = "FN"
+                    else:
+                        tn += 1
+                        outcome = "TN"
 
-            total = len(eligible_samples)
-            prec = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0
-            rec = (tp / (tp + fn)) if (tp + fn) > 0 else 0.0
-            f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
-            acc = ((tp + tn) / total) if total > 0 else 0.0
+                    combined_samples[idx]["evaluations"][cand_key] = {
+                        "status": "OK",
+                        "is_success": (detected == expected),
+                        "error": None,
+                        "score": round(score, 4),
+                        "detected": detected,
+                        "expected": expected,
+                        "outcome": outcome,
+                    }
+
+            processed_total = tp + fp + tn + fn
+            errors = pos_errors + neg_errors
+            eligible_total = processed_total + errors
+            pos_processed = tp + fn
+            neg_processed = tn + fp
+            pos_eligible = pos_processed + pos_errors
+            neg_eligible = neg_processed + neg_errors
+
+            acc = ((tp + tn) / eligible_total) if eligible_total > 0 else None
+            prec = (tp / (tp + fp)) if (tp + fp) > 0 else None
+            rec = (tp / pos_eligible) if pos_eligible > 0 else None
+            far = (fp / neg_eligible) if neg_eligible > 0 else None
+            if prec is not None and rec is not None:
+                if (prec + rec) > 0:
+                    f1 = (2 * prec * rec) / (prec + rec)
+                else:
+                    f1 = 0.0
+            else:
+                f1 = None
+            cov = (processed_total / eligible_total) if eligible_total > 0 else None
+            err_rate = (errors / eligible_total) if eligible_total > 0 else None
 
             cand_m = {
                 "candidate_id": cand_id,
                 "candidate_name": cand_name,
                 "engine": cand_engine,
                 "threshold": cand_threshold,
-                "total": total,
+                "eligible_total": eligible_total,
+                "processed_total": processed_total,
+                "total": eligible_total,
+                "errors": errors,
+                "positive": {
+                    "eligible": pos_eligible,
+                    "processed": pos_processed,
+                    "errors": pos_errors,
+                    "tp": tp,
+                    "fn": fn,
+                    "accurate": tp,
+                    "missed": fn,
+                    "accurate_rate": round(tp / pos_eligible, 4) if pos_eligible > 0 else None,
+                    "frr": round(fn / pos_eligible, 4) if pos_eligible > 0 else None,
+                },
+                "negative": {
+                    "eligible": neg_eligible,
+                    "processed": neg_processed,
+                    "errors": neg_errors,
+                    "tn": tn,
+                    "fp": fp,
+                    "correct_reject": tn,
+                    "false_alarm": fp,
+                    "far": round(fp / neg_eligible, 4) if neg_eligible > 0 else None,
+                },
                 "tp": tp,
                 "fp": fp,
                 "tn": tn,
                 "fn": fn,
-                "precision": round(prec, 4),
-                "recall": round(rec, 4),
-                "f1": round(f1, 4),
-                "accuracy": round(acc, 4),
+                "precision": round(prec, 4) if prec is not None else None,
+                "recall": round(rec, 4) if rec is not None else None,
+                "f1": round(f1, 4) if f1 is not None else None,
+                "accuracy": round(acc, 4) if acc is not None else None,
+                "far": round(far, 4) if far is not None else None,
+                "coverage": round(cov, 4) if cov is not None else None,
+                "error_rate": round(err_rate, 4) if err_rate is not None else None,
             }
             metrics[cand_key] = cand_m
 
@@ -291,7 +403,20 @@ def run_candidate_evaluation(
         else:
             raise ValueError(f"Engine '{cand_engine}' không được hỗ trợ trong candidate evaluation.")
 
+    has_processing_errors = any(
+        m.get("errors", 0) > 0 for m in metrics.values()
+    ) or any(
+        any(
+            ev.get("status") == "ERROR" or ev.get("outcome") == "ERROR"
+            for ev in s.get("evaluations", {}).values()
+        )
+        for s in combined_samples
+    )
+    status_str = "completed_with_errors" if has_processing_errors else "completed"
+
     return {
+        "status": status_str,
+        "has_processing_errors": has_processing_errors,
         "timestamp": datetime.now().astimezone().isoformat(),
         "split": split,
         "evaluation_mode": mode,

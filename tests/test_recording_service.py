@@ -16,7 +16,9 @@ from smart_hub.recording import (
 
 class RecordingServiceTests(unittest.TestCase):
     def setUp(self):
-        self.service = RecordingService()
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.recordings_root = Path(self.tmp_dir.name)
+        self.service = RecordingService(recordings_root=self.recordings_root)
 
     def tearDown(self):
         self.service.stop()
@@ -25,6 +27,7 @@ class RecordingServiceTests(unittest.TestCase):
         if self.service._audio_res_lock:
             self.service._audio_res_lock.release()
             self.service._audio_res_lock = None
+        self.tmp_dir.cleanup()
 
     def test_session_lifecycle_with_manual_advance(self):
         cfg = SessionConfig(
@@ -263,6 +266,123 @@ class RecordingServiceTests(unittest.TestCase):
         self.assertEqual(self.service.state, RecordingState.FAILED)
         self.assertIn("disk full", self.service.error_message)
         self.assertEqual(self.service.manifest["status"], "sync_failed")
+
+    def test_v3_01_manual_advance_take_sequence_contract(self):
+        cfg = SessionConfig(
+            speaker="child",
+            speaker_id="child_v301",
+            split="pilot",
+            label="positive",
+            phrase="Maika ơi",
+            expected_events=1,
+            distance_m=1.0,
+            condition="quiet",
+            takes_planned=2,
+            manual_advance=True,
+            no_sync=True,
+            mock=True,
+        )
+        self.service.start_session(cfg)
+
+        # Wait for state to reach WAITING_USER (take 1)
+        start = time.monotonic()
+        while self.service.state != RecordingState.WAITING_USER and time.monotonic() - start < 3.0:
+            time.sleep(0.02)
+        self.assertEqual(self.service.state, RecordingState.WAITING_USER)
+        self.assertEqual(self.service.current_take, 1)
+        session_id = self.service.session_id
+
+        # 1. Wrong session_id raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            self.service.advance(session_id="wrong_session_123", take_sequence=1)
+        self.assertIn("không khớp", str(ctx.exception))
+        self.assertEqual(self.service.current_take, 1)
+        self.assertEqual(self.service.state, RecordingState.WAITING_USER)
+
+        # 2. Future take raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            self.service.advance(session_id=session_id, take_sequence=2)
+        self.assertIn("không khớp", str(ctx.exception))
+        self.assertEqual(self.service.current_take, 1)
+
+        # 3. Correct session_id and take_sequence=1 advances successfully
+        self.service.advance(session_id=session_id, take_sequence=1)
+
+        # Wait for worker to transition to WAITING_USER of take 2
+        start = time.monotonic()
+        while self.service.current_take != 2 or self.service.state != RecordingState.WAITING_USER:
+            if time.monotonic() - start > 4.0:
+                self.fail("Timeout waiting for take 2 WAITING_USER")
+            time.sleep(0.02)
+
+        self.assertEqual(self.service.current_take, 2)
+        self.assertEqual(self.service.state, RecordingState.WAITING_USER)
+
+        # 4. Stale take_sequence=1 raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            self.service.advance(session_id=session_id, take_sequence=1)
+        self.assertIn("không khớp", str(ctx.exception))
+        self.assertEqual(self.service.current_take, 2)
+
+        # 5. Correct take_sequence=2 advances and completes session
+        self.service.advance(session_id=session_id, take_sequence=2)
+
+        start = time.monotonic()
+        while self.service.state != RecordingState.COMPLETED and time.monotonic() - start < 4.0:
+            time.sleep(0.02)
+        self.assertEqual(self.service.state, RecordingState.COMPLETED)
+        self.assertEqual(len(self.service.clips), 2)
+
+    def test_v3_05_lease_timeout_marks_interrupted_and_finalize_preserves(self):
+        # Service with short lease timeout (0.15s)
+        service = RecordingService(
+            recordings_root=self.recordings_root,
+            lease_timeout_seconds=0.15,
+        )
+        try:
+            cfg = SessionConfig(
+                speaker="child",
+                speaker_id="child_v305",
+                split="pilot",
+                label="positive",
+                phrase="Maika ơi",
+                expected_events=1,
+                distance_m=1.0,
+                condition="quiet",
+                takes_planned=2,
+                manual_advance=True,
+                no_sync=True,
+                mock=True,
+            )
+            service.start_session(cfg)
+
+            # Wait for WAITING_USER
+            start = time.monotonic()
+            while service.state != RecordingState.WAITING_USER and time.monotonic() - start < 3.0:
+                time.sleep(0.02)
+            self.assertEqual(service.state, RecordingState.WAITING_USER)
+
+            # Do NOT advance; wait for lease timeout to trigger
+            start = time.monotonic()
+            while service.state != RecordingState.INTERRUPTED and time.monotonic() - start < 3.0:
+                time.sleep(0.02)
+
+            self.assertEqual(service.state, RecordingState.INTERRUPTED)
+            self.assertIn("lease timeout", service.error_message.lower())
+            self.assertEqual(service.manifest["status"], "interrupted")
+
+            # Wait for worker thread to finish cleanup
+            if service._thread and service._thread.is_alive():
+                service._thread.join(timeout=2.0)
+
+            # Audio lock should be released
+            self.assertIsNone(service._audio_res_lock)
+        finally:
+            service.stop()
+            if service._thread and service._thread.is_alive():
+                service._thread.join(timeout=2.0)
+            if service._audio_res_lock:
+                service._audio_res_lock.release()
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from ..config import ROOT
@@ -18,6 +18,7 @@ from .base import (
     GatewayCheckResult,
     GatewayInfo,
     GatewayStatus,
+    LedgerConflictError,
     Observation,
     ObservationOutcome,
 )
@@ -76,7 +77,8 @@ class DeviceStorage:
                 encoding TEXT NOT NULL DEFAULT 'broadlink_base64',
                 hash TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                codes TEXT NOT NULL -- JSON dict button_key -> base64
+                codes TEXT NOT NULL, -- JSON dict button_key -> base64
+                is_quarantined INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_code_sets_category_brand ON code_sets(category, brand);
 
@@ -105,7 +107,8 @@ class DeviceStorage:
                 source_type TEXT NOT NULL, -- 'catalog' or 'learned'
                 revision_number INTEGER NOT NULL DEFAULT 1,
                 is_verified INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                is_mock_seed INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_code_revisions_appliance_btn ON code_revisions(appliance_id, button_key);
 
@@ -284,14 +287,27 @@ class DeviceStorage:
         with self._get_connection() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO code_sets
-                (id, category, brand, models, source_name, source_url, source_revision, license, encoding, hash, created_at, codes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO code_sets
+                (id, category, brand, models, source_name, source_url, source_revision, license, encoding, hash, created_at, codes, is_quarantined)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    category = excluded.category,
+                    brand = excluded.brand,
+                    models = excluded.models,
+                    source_name = excluded.source_name,
+                    source_url = excluded.source_url,
+                    source_revision = excluded.source_revision,
+                    license = excluded.license,
+                    encoding = excluded.encoding,
+                    hash = excluded.hash,
+                    codes = excluded.codes,
+                    is_quarantined = MAX(code_sets.is_quarantined, excluded.is_quarantined)
                 """,
                 (
                     cs.id, cs.category.value, cs.brand, json.dumps(cs.models, ensure_ascii=False),
                     cs.source_name, cs.source_url, cs.source_revision, cs.license,
                     cs.encoding, cs.hash, cs.created_at, json.dumps(cs.codes, ensure_ascii=False),
+                    1 if cs.is_quarantined else 0,
                 ),
             )
 
@@ -332,6 +348,7 @@ class DeviceStorage:
             return [r["brand"] for r in rows]
 
     def _row_to_code_set(self, row: sqlite3.Row) -> CodeSet:
+        keys = row.keys()
         return CodeSet(
             id=row["id"],
             category=ApplianceCategory(row["category"]),
@@ -345,6 +362,7 @@ class DeviceStorage:
             hash=row["hash"],
             created_at=row["created_at"],
             codes=json.loads(row["codes"]),
+            is_quarantined=bool(row["is_quarantined"]) if "is_quarantined" in keys else False,
         )
 
     # --- Appliances ---
@@ -353,9 +371,19 @@ class DeviceStorage:
         with self._get_connection() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO appliances
+                INSERT INTO appliances
                 (id, name, room, category, brand, model, gateway_id, code_set_id, mapping_revision, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    room = excluded.room,
+                    category = excluded.category,
+                    brand = excluded.brand,
+                    model = excluded.model,
+                    gateway_id = excluded.gateway_id,
+                    code_set_id = coalesce(excluded.code_set_id, appliances.code_set_id),
+                    mapping_revision = excluded.mapping_revision,
+                    updated_at = excluded.updated_at
                 """,
                 (
                     app.id, app.name, app.room, app.category.value, app.brand, app.model,
@@ -404,14 +432,26 @@ class DeviceStorage:
         with self._get_connection() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO code_revisions
-                (id, code_set_id, appliance_id, button_key, button_name, payload_base64, payload_hash, source_type, revision_number, is_verified, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO code_revisions
+                (id, code_set_id, appliance_id, button_key, button_name, payload_base64, payload_hash, source_type, revision_number, is_verified, created_at, is_mock_seed)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    code_set_id = coalesce(excluded.code_set_id, code_revisions.code_set_id),
+                    appliance_id = coalesce(excluded.appliance_id, code_revisions.appliance_id),
+                    button_key = excluded.button_key,
+                    button_name = excluded.button_name,
+                    payload_base64 = excluded.payload_base64,
+                    payload_hash = excluded.payload_hash,
+                    source_type = excluded.source_type,
+                    revision_number = excluded.revision_number,
+                    is_verified = excluded.is_verified,
+                    is_mock_seed = MAX(code_revisions.is_mock_seed, excluded.is_mock_seed)
                 """,
                 (
                     rev.id, rev.code_set_id, rev.appliance_id, rev.button_key, rev.button_name,
                     rev.payload_base64, rev.payload_hash, rev.source_type, rev.revision_number,
                     1 if rev.is_verified else 0, rev.created_at,
+                    1 if rev.is_mock_seed else 0,
                 ),
             )
 
@@ -459,6 +499,7 @@ class DeviceStorage:
             conn.execute("UPDATE code_revisions SET is_verified = ? WHERE id = ?", (1 if is_verified else 0, rev_id))
 
     def _row_to_code_revision(self, row: sqlite3.Row) -> CodeRevision:
+        keys = row.keys()
         return CodeRevision(
             id=row["id"],
             code_set_id=row["code_set_id"],
@@ -471,6 +512,7 @@ class DeviceStorage:
             revision_number=row["revision_number"],
             is_verified=bool(row["is_verified"]),
             created_at=row["created_at"],
+            is_mock_seed=bool(row["is_mock_seed"]) if "is_mock_seed" in keys else False,
         )
 
     # --- Observations ---
@@ -516,7 +558,40 @@ class DeviceStorage:
                 return None
             return self._row_to_ledger_entry(row)
 
-    def prepare_command(
+    def _validate_ledger_conflict(
+        self,
+        existing: CommandLedgerEntry,
+        request_id: str,
+        gateway_id: str,
+        appliance_id: str,
+        button_key: str,
+        code_revision_id: str,
+        payload_digest: Optional[str],
+    ):
+        if existing.payload_digest is not None and payload_digest is not None:
+            if existing.payload_digest != payload_digest:
+                raise LedgerConflictError(
+                    f"request_id '{request_id}' conflict: existing digest '{existing.payload_digest}' "
+                    f"does not match new digest '{payload_digest}'"
+                )
+        else:
+            # Legacy row where payload_digest IS NULL (or payload_digest not passed):
+            # Fail-closed: compare all stored bindings
+            if (
+                existing.gateway_id != gateway_id
+                or existing.appliance_id != appliance_id
+                or existing.button_key != button_key
+                or existing.code_revision_id != code_revision_id
+            ):
+                raise LedgerConflictError(
+                    f"request_id '{request_id}' conflict on legacy ledger entry: binding mismatch ("
+                    f"gateway: {existing.gateway_id} vs {gateway_id}, "
+                    f"appliance: {existing.appliance_id} vs {appliance_id}, "
+                    f"button: {existing.button_key} vs {button_key}, "
+                    f"revision: {existing.code_revision_id} vs {code_revision_id})"
+                )
+
+    def claim_command(
         self,
         request_id: str,
         gateway_id: str,
@@ -524,19 +599,27 @@ class DeviceStorage:
         button_key: str,
         code_revision_id: str,
         payload_digest: Optional[str] = None,
-    ) -> CommandLedgerEntry:
+    ) -> Tuple[CommandLedgerEntry, bool]:
+        """Atomically claim request_id in command ledger.
+        Returns (entry, is_claimed_new).
+        Raises LedgerConflictError on digest or binding mismatch.
+        """
         existing = self.get_ledger_entry(request_id)
         if existing:
-            if existing.payload_digest and payload_digest and existing.payload_digest != payload_digest:
-                raise ValueError(
-                    f"request_id '{request_id}' conflict: existing digest '{existing.payload_digest}' "
-                    f"does not match new digest '{payload_digest}'"
-                )
-            return existing
+            self._validate_ledger_conflict(
+                existing=existing,
+                request_id=request_id,
+                gateway_id=gateway_id,
+                appliance_id=appliance_id,
+                button_key=button_key,
+                code_revision_id=code_revision_id,
+                payload_digest=payload_digest,
+            )
+            return existing, False
 
         now = datetime.now().astimezone().isoformat()
         entry_id = f"cmd_{uuid.uuid4().hex[:12]}"
-        entry = CommandLedgerEntry(
+        new_entry = CommandLedgerEntry(
             id=entry_id,
             request_id=request_id,
             gateway_id=gateway_id,
@@ -554,18 +637,53 @@ class DeviceStorage:
                     INSERT INTO command_ledger (id, request_id, gateway_id, appliance_id, button_key, code_revision_id, state, sent_at, payload_digest)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (entry.id, entry.request_id, entry.gateway_id, entry.appliance_id, entry.button_key, entry.code_revision_id, entry.state.value, entry.sent_at, entry.payload_digest),
+                    (
+                        new_entry.id,
+                        new_entry.request_id,
+                        new_entry.gateway_id,
+                        new_entry.appliance_id,
+                        new_entry.button_key,
+                        new_entry.code_revision_id,
+                        new_entry.state.value,
+                        new_entry.sent_at,
+                        new_entry.payload_digest,
+                    ),
                 )
+                return new_entry, True
             except sqlite3.IntegrityError:
-                race_entry = self.get_ledger_entry(request_id)
-                if race_entry and race_entry.payload_digest and payload_digest and race_entry.payload_digest != payload_digest:
-                    raise ValueError(
-                        f"request_id '{request_id}' conflict: race digest '{race_entry.payload_digest}' "
-                        f"does not match new digest '{payload_digest}'"
-                    )
-                if race_entry:
-                    return race_entry
-                raise
+                # Race: request_id was inserted concurrently
+                row = conn.execute("SELECT * FROM command_ledger WHERE request_id = ?", (request_id,)).fetchone()
+                if not row:
+                    raise
+                race_entry = self._row_to_ledger_entry(row)
+                self._validate_ledger_conflict(
+                    existing=race_entry,
+                    request_id=request_id,
+                    gateway_id=gateway_id,
+                    appliance_id=appliance_id,
+                    button_key=button_key,
+                    code_revision_id=code_revision_id,
+                    payload_digest=payload_digest,
+                )
+                return race_entry, False
+
+    def prepare_command(
+        self,
+        request_id: str,
+        gateway_id: str,
+        appliance_id: str,
+        button_key: str,
+        code_revision_id: str,
+        payload_digest: Optional[str] = None,
+    ) -> CommandLedgerEntry:
+        entry, _ = self.claim_command(
+            request_id=request_id,
+            gateway_id=gateway_id,
+            appliance_id=appliance_id,
+            button_key=button_key,
+            code_revision_id=code_revision_id,
+            payload_digest=payload_digest,
+        )
         return entry
 
     def update_command_state(self, request_id: str, state: CommandState, error_message: Optional[str] = None, raw_ack: Optional[str] = None):
