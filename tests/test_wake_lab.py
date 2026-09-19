@@ -829,6 +829,503 @@ class WakeLabTests(unittest.TestCase):
         self.assertIn("0.045", md_mixed)  # STT decode RTF rendered
         self.assertIn("F1-Score", md_mixed)  # DTW metric rendered
 
+    @unittest.skipUnless(HAS_NUMPY, "numpy required for DTW fail-closed tests")
+    def test_v3_1_01_dtw_fail_closed_validation(self):
+        import wave, struct
+        # Setup DTW candidate
+        with unittest.mock.patch("smart_hub.wake_lab.enrollment.load_labels") as mock_labels:
+            mock_labels.return_value = [
+                {
+                    "sample_id": "child_dev_ref_v31",
+                    "split": "dev",
+                    "review_status": "accepted",
+                    "speaker_confirmed": True,
+                    "source": self.test_wav_rel,
+                    "source_sha256": self.test_wav_sha,
+                }
+            ]
+            cand = create_candidate_from_samples(
+                name="DTW FailClosed Cand",
+                sample_ids=["child_dev_ref_v31"],
+                engine=WakeEngine.DTW,
+                threshold=0.3,
+                registry=self.registry,
+                root=Path(self.tmp_dir.name),
+            )
+        art = self.registry.get_artifact(cand.model_id)
+        cand_data = {
+            "id": "cand_failclosed_test",
+            "name": "DTW FailClosed Cand",
+            "engine": "dtw",
+            "threshold": 0.3,
+            "artifact_file": art.files[0],
+        }
+
+        # 1. Truncated WAV: header says 8000 frames (16000 bytes expected), but actual pcm is 2000 bytes
+        trunc_wav_path = Path(self.tmp_dir.name) / "truncated.wav"
+        fmt_chunk = struct.pack("<4sIHHIIHH", b"fmt ", 16, 1, 1, 16000, 32000, 2, 16)
+        data_hdr = struct.pack("<4sI", b"data", 16000)
+        actual_data = b"\x00\x00" * 1000
+        raw_wav = struct.pack("<4sI4s", b"RIFF", 4 + len(fmt_chunk) + len(data_hdr) + len(actual_data), b"WAVE") + fmt_chunk + data_hdr + actual_data
+        trunc_wav_path.write_bytes(raw_wav)
+        trunc_sha = hashlib.sha256(raw_wav).hexdigest()
+
+        eval_res1 = run_candidate_evaluation(
+            eligible_samples=[{
+                "sample_id": "s_truncated",
+                "source": "truncated.wav",
+                "source_sha256": trunc_sha,
+                "label": "positive",
+                "expected_events": 1,
+            }],
+            candidates_data=[cand_data],
+            split="dev",
+            mode="official",
+            root=Path(self.tmp_dir.name),
+        )
+        sample_ev1 = eval_res1["samples"][0]["evaluations"]["DTW FailClosed Cand"]
+        self.assertEqual(sample_ev1["status"], "ERROR")
+        self.assertEqual(sample_ev1["outcome"], "ERROR")
+        self.assertIn("Truncated PCM", sample_ev1["error"])
+
+        # 2. Feature invalid shape (shape (N, 25) or 1D)
+        with mock.patch("smart_hub.engine.features", return_value=np.zeros((30, 25), dtype=np.float32)):
+            eval_res2 = run_candidate_evaluation(
+                eligible_samples=[{
+                    "sample_id": "s_shape_25",
+                    "source": self.test_wav_rel,
+                    "source_sha256": self.test_wav_sha,
+                    "label": "positive",
+                    "expected_events": 1,
+                }],
+                candidates_data=[cand_data],
+                split="dev",
+                mode="official",
+                root=Path(self.tmp_dir.name),
+            )
+            sample_ev2 = eval_res2["samples"][0]["evaluations"]["DTW FailClosed Cand"]
+            self.assertEqual(sample_ev2["status"], "ERROR")
+            self.assertEqual(sample_ev2["outcome"], "ERROR")
+            self.assertIn("invalid shape", sample_ev2["error"].lower())
+
+        # 1D feature
+        with mock.patch("smart_hub.engine.features", return_value=np.zeros(26, dtype=np.float32)):
+            eval_res_1d = run_candidate_evaluation(
+                eligible_samples=[{
+                    "sample_id": "s_shape_1d",
+                    "source": self.test_wav_rel,
+                    "source_sha256": self.test_wav_sha,
+                    "label": "positive",
+                    "expected_events": 1,
+                }],
+                candidates_data=[cand_data],
+                split="dev",
+                mode="official",
+                root=Path(self.tmp_dir.name),
+            )
+            self.assertEqual(eval_res_1d["samples"][0]["evaluations"]["DTW FailClosed Cand"]["outcome"], "ERROR")
+
+        # 3. Feature too short (shape (5, 26))
+        with mock.patch("smart_hub.engine.features", return_value=np.zeros((5, 26), dtype=np.float32)):
+            eval_res3 = run_candidate_evaluation(
+                eligible_samples=[{
+                    "sample_id": "s_too_short",
+                    "source": self.test_wav_rel,
+                    "source_sha256": self.test_wav_sha,
+                    "label": "positive",
+                    "expected_events": 1,
+                }],
+                candidates_data=[cand_data],
+                split="dev",
+                mode="official",
+                root=Path(self.tmp_dir.name),
+            )
+            sample_ev3 = eval_res3["samples"][0]["evaluations"]["DTW FailClosed Cand"]
+            self.assertEqual(sample_ev3["status"], "ERROR")
+            self.assertEqual(sample_ev3["outcome"], "ERROR")
+
+        # 4. features() raise exception
+        with mock.patch("smart_hub.engine.features", side_effect=RuntimeError("MFCC calculation error")):
+            eval_res4 = run_candidate_evaluation(
+                eligible_samples=[{
+                    "sample_id": "s_feat_raise",
+                    "source": self.test_wav_rel,
+                    "source_sha256": self.test_wav_sha,
+                    "label": "positive",
+                    "expected_events": 1,
+                }],
+                candidates_data=[cand_data],
+                split="dev",
+                mode="official",
+                root=Path(self.tmp_dir.name),
+            )
+            sample_ev4 = eval_res4["samples"][0]["evaluations"]["DTW FailClosed Cand"]
+            self.assertEqual(sample_ev4["status"], "ERROR")
+            self.assertEqual(sample_ev4["outcome"], "ERROR")
+            self.assertIn("MFCC calculation error", sample_ev4["error"])
+
+        # 5. similarity() raise exception
+        with mock.patch("smart_hub.engine.similarity", side_effect=RuntimeError("DTW matrix blowup")):
+            eval_res5 = run_candidate_evaluation(
+                eligible_samples=[{
+                    "sample_id": "s_sim_raise",
+                    "source": self.test_wav_rel,
+                    "source_sha256": self.test_wav_sha,
+                    "label": "positive",
+                    "expected_events": 1,
+                }],
+                candidates_data=[cand_data],
+                split="dev",
+                mode="official",
+                root=Path(self.tmp_dir.name),
+            )
+            self.assertEqual(eval_res5["status"], "completed_with_errors")
+            sample_ev5 = eval_res5["samples"][0]["evaluations"]["DTW FailClosed Cand"]
+            self.assertEqual(sample_ev5["status"], "ERROR")
+            self.assertEqual(sample_ev5["outcome"], "ERROR")
+            self.assertIn("DTW matrix blowup", sample_ev5["error"])
+
+        # 6. similarity() returns NaN
+        with mock.patch("smart_hub.engine.similarity", return_value=float("nan")):
+            eval_res6 = run_candidate_evaluation(
+                eligible_samples=[{
+                    "sample_id": "s_sim_nan",
+                    "source": self.test_wav_rel,
+                    "source_sha256": self.test_wav_sha,
+                    "label": "positive",
+                    "expected_events": 1,
+                }],
+                candidates_data=[cand_data],
+                split="dev",
+                mode="official",
+                root=Path(self.tmp_dir.name),
+            )
+            sample_ev6 = eval_res6["samples"][0]["evaluations"]["DTW FailClosed Cand"]
+            self.assertEqual(sample_ev6["status"], "ERROR")
+            self.assertEqual(sample_ev6["outcome"], "ERROR")
+            self.assertIn("non-finite", sample_ev6["error"].lower())
+
+        # 7, 8: 10 eligible samples, 9 processed, 1 negative sample similarity error
+        samples_10_neg = []
+        for i in range(5):
+            samples_10_neg.append({
+                "sample_id": f"pos_{i}",
+                "source": self.test_wav_rel,
+                "source_sha256": self.test_wav_sha,
+                "label": "positive",
+                "expected_events": 1,
+            })
+        for i in range(5):
+            samples_10_neg.append({
+                "sample_id": f"neg_{i}",
+                "source": self.test_wav_rel,
+                "source_sha256": self.test_wav_sha,
+                "label": "negative",
+                "expected_events": 0,
+            })
+
+        call_idx = 0
+        def sim_selective_error(feat, t):
+            nonlocal call_idx
+            call_idx += 1
+            if call_idx >= 10:
+                raise RuntimeError("Sim error on sample 10")
+            return 0.85
+
+        with mock.patch("smart_hub.engine.similarity", side_effect=sim_selective_error):
+            eval_res_neg = run_candidate_evaluation(
+                eligible_samples=samples_10_neg,
+                candidates_data=[cand_data],
+                split="dev",
+                mode="official",
+                root=Path(self.tmp_dir.name),
+            )
+            m_neg = eval_res_neg["metrics"]["DTW FailClosed Cand"]
+            self.assertEqual(m_neg["eligible_total"], 10)
+            self.assertEqual(m_neg["processed_total"], 9)
+            self.assertEqual(m_neg["errors"], 1)
+            self.assertEqual(m_neg["negative"]["errors"], 1)
+            self.assertEqual(m_neg["negative"]["eligible"], 5)
+            self.assertEqual(m_neg["negative"]["processed"], 4)
+            # The failed negative sample must NOT be counted as TN!
+            self.assertEqual(m_neg["tn"] + m_neg["fp"], 4)
+
+        # 9: Positive sample similarity error does NOT count as FN
+        call_idx2 = 0
+        def sim_selective_pos_error(feat, t):
+            nonlocal call_idx2
+            call_idx2 += 1
+            if call_idx2 == 1:
+                raise RuntimeError("Sim error on first positive sample")
+            return 0.85
+
+        with mock.patch("smart_hub.engine.similarity", side_effect=sim_selective_pos_error):
+            eval_res_pos = run_candidate_evaluation(
+                eligible_samples=samples_10_neg,
+                candidates_data=[cand_data],
+                split="dev",
+                mode="official",
+                root=Path(self.tmp_dir.name),
+            )
+            m_pos = eval_res_pos["metrics"]["DTW FailClosed Cand"]
+            self.assertEqual(m_pos["eligible_total"], 10)
+            self.assertEqual(m_pos["processed_total"], 9)
+            self.assertEqual(m_pos["errors"], 1)
+            self.assertEqual(m_pos["positive"]["errors"], 1)
+            self.assertEqual(m_pos["positive"]["eligible"], 5)
+            self.assertEqual(m_pos["positive"]["processed"], 4)
+            # The failed positive sample must NOT be counted as FN!
+            self.assertEqual(m_pos["tp"] + m_pos["fn"], 4)
+
+    def test_v3_1_02_dtw_markdown_na_semantics(self):
+        # 1. Pure DTW report: Decode/RTF must be N/A, and not 0.000
+        pure_dtw_data = {
+            "evaluation_mode": "official",
+            "split": "dev",
+            "timestamp": "2026-09-19T21:00:00Z",
+            "eligible_total": 2,
+            "status": "completed",
+            "has_processing_errors": False,
+            "profiles": ["DTW Pure Cand"],
+            "metrics": {
+                "DTW Pure Cand": {
+                    "engine": "dtw",
+                    "eligible_total": 2,
+                    "processed_total": 2,
+                    "errors": 0,
+                    "accuracy": 1.0,
+                    "tp": 1, "tn": 1, "fp": 0, "fn": 0,
+                }
+            },
+            "samples": [
+                {
+                    "sample_id": "sample_dtw_01",
+                    "label": "positive",
+                    "evaluations": {
+                        "DTW Pure Cand": {
+                            "status": "OK",
+                            "outcome": "TP",
+                            "score": 0.8876,
+                            # No decode_seconds or decode_rtf
+                        }
+                    },
+                }
+            ],
+        }
+        md_pure = format_evaluation_markdown(pure_dtw_data)
+        self.assertIn("| `sample_dtw_01` | `positive` | `DTW Pure Cand` | TP | **OK** | score=0.8876 | N/A | N/A |", md_pure)
+        self.assertNotIn("0.000", md_pure)
+
+        # 2. Mixed report: STT row renders real decode metrics, DTW row renders N/A
+        mixed_data = {
+            "evaluation_mode": "official",
+            "split": "dev",
+            "timestamp": "2026-09-19T21:00:00Z",
+            "eligible_total": 2,
+            "status": "completed",
+            "has_processing_errors": False,
+            "profiles": ["STT Cand", "DTW Cand"],
+            "metrics": {
+                "STT Cand": {
+                    "engine": "sherpa_onnx_stt",
+                    "performance": {"decode_rtf": 0.045, "max_decode_seconds": 0.120},
+                    "positive": {"eligible": 1, "accurate": 1, "missed": 0, "duplicate": 0, "errors": 0},
+                    "negative": {"eligible": 1, "false_alarm": 0, "errors": 0},
+                    "errors": 0,
+                },
+                "DTW Cand": {
+                    "engine": "dtw",
+                    "eligible_total": 2,
+                    "processed_total": 2,
+                    "errors": 0,
+                    "tp": 1, "tn": 1, "fp": 0, "fn": 0,
+                },
+            },
+            "samples": [
+                {
+                    "sample_id": "sample_mix_01",
+                    "label": "positive",
+                    "evaluations": {
+                        "STT Cand": {
+                            "status": "ACCURATE",
+                            "events": 1,
+                            "transcripts": ["Maika ơi"],
+                            "decode_seconds": 0.125,
+                            "decode_rtf": 0.042,
+                        },
+                        "DTW Cand": {
+                            "status": "OK",
+                            "outcome": "TP",
+                            "score": 0.9123,
+                        },
+                    },
+                }
+            ],
+        }
+        md_mixed = format_evaluation_markdown(mixed_data)
+        # STT row has real metrics
+        self.assertIn("| `sample_mix_01` | `positive` | `STT Cand` | 1 | **ACCURATE** | Maika ơi | 0.125 | 0.042 |", md_mixed)
+        # DTW row has N/A
+        self.assertIn("| `sample_mix_01` | `positive` | `DTW Cand` | TP | **OK** | score=0.9123 | N/A | N/A |", md_mixed)
+
+        # 3. DTW ERROR row renders error message + N/A decode
+        err_data = {
+            "evaluation_mode": "official",
+            "split": "dev",
+            "timestamp": "2026-09-19T21:00:00Z",
+            "eligible_total": 1,
+            "status": "completed_with_errors",
+            "has_processing_errors": True,
+            "profiles": ["DTW Cand"],
+            "metrics": {
+                "DTW Cand": {
+                    "engine": "dtw",
+                    "eligible_total": 1,
+                    "processed_total": 0,
+                    "errors": 1,
+                }
+            },
+            "samples": [
+                {
+                    "sample_id": "sample_err_01",
+                    "label": "positive",
+                    "evaluations": {
+                        "DTW Cand": {
+                            "status": "ERROR",
+                            "outcome": "ERROR",
+                            "error": "Truncated PCM audio in test.wav",
+                        }
+                    },
+                }
+            ],
+        }
+        md_err = format_evaluation_markdown(err_data)
+        self.assertIn("| `sample_err_01` | `positive` | `DTW Cand` | ERROR | **ERROR** | error: Truncated PCM audio in test.wav | N/A | N/A |", md_err)
+
+    def test_v3_1_07_subprocess_worker_dtw_error_and_parent_evaluator(self):
+        import json, os, subprocess
+        venv_py = ROOT / ".venv" / "bin" / "python"
+        if not venv_py.exists():
+            self.skipTest(".venv/bin/python not found")
+
+        # 1. Enroll DTW candidate to get a real template.npz artifact
+        with unittest.mock.patch("smart_hub.wake_lab.enrollment.load_labels") as mock_labels:
+            mock_labels.return_value = [
+                {
+                    "sample_id": "child_dev_ref_sub",
+                    "split": "dev",
+                    "review_status": "accepted",
+                    "speaker_confirmed": True,
+                    "source": self.test_wav_rel,
+                    "source_sha256": self.test_wav_sha,
+                }
+            ]
+            cand = create_candidate_from_samples(
+                name="DTW Subprocess Cand",
+                sample_ids=["child_dev_ref_sub"],
+                engine=WakeEngine.DTW,
+                threshold=0.3,
+                registry=self.registry,
+                root=Path(self.tmp_dir.name),
+            )
+        art = self.registry.get_artifact(cand.model_id)
+
+        # Input: 1 valid sample, 1 integrity-error sample (missing file)
+        payload = {
+            "eligible_samples": [
+                {
+                    "sample_id": "s_valid_dev",
+                    "source": self.test_wav_rel,
+                    "source_sha256": self.test_wav_sha,
+                    "speaker_id": "child_01",
+                    "speaker_label": "child",
+                    "session_id": "s_dev_1",
+                    "split": "dev",
+                    "label": "positive",
+                    "transcript_human": "Maika ơi",
+                    "condition": "quiet_normal_voice",
+                    "distance_m": 1.0,
+                    "speaker_confirmed": True,
+                    "review_status": "accepted",
+                    "expected_events": 1,
+                },
+                {
+                    "sample_id": "s_error_dev",
+                    "source": "missing_audio_sub.wav",
+                    "source_sha256": "fake_sha_missing",
+                    "speaker_id": "child_01",
+                    "speaker_label": "child",
+                    "session_id": "s_dev_1",
+                    "split": "dev",
+                    "label": "negative",
+                    "transcript_human": "Không có",
+                    "condition": "quiet_normal_voice",
+                    "distance_m": 1.0,
+                    "speaker_confirmed": True,
+                    "review_status": "accepted",
+                    "expected_events": 0,
+                },
+            ],
+            "candidates": [
+                {
+                    "id": cand.id,
+                    "name": "DTW Subprocess Cand",
+                    "engine": "dtw",
+                    "threshold": 0.3,
+                    "artifact_file": art.files[0],
+                }
+            ],
+            "split": "dev",
+            "mode": "official",
+            "root": str(self.tmp_dir.name),
+        }
+        worker_script = str(ROOT / "src" / "smart_hub" / "wake_lab" / "worker.py")
+        proc = subprocess.run(
+            [str(venv_py), worker_script],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+            env=dict(os.environ, PYTHONPATH=f"{ROOT / 'src'}:{os.environ.get('PYTHONPATH', '')}"),
+            timeout=30.0,
+        )
+        self.assertEqual(proc.returncode, 0, f"Worker process failed: {proc.stderr}")
+        resp = json.loads(proc.stdout)
+        self.assertEqual(resp.get("status"), "ok")
+        eval_data = resp["eval_data"]
+        self.assertEqual(eval_data["status"], "completed_with_errors")
+        self.assertTrue(eval_data["has_processing_errors"])
+        self.assertEqual(eval_data["eligible_total"], 2)
+        m = eval_data["metrics"]["DTW Subprocess Cand"]
+        self.assertEqual(m["eligible_total"], 2)
+        self.assertEqual(m["processed_total"], 1)
+        self.assertEqual(m["errors"], 1)
+
+        # Parent path: WakeEvaluator saves and reloads completed_with_errors
+        evaluator = WakeEvaluator(self.registry, audio_python=str(venv_py))
+        eval_id = "eval_sub_parent_test"
+        eval_name = "Subprocess Parent Test"
+        md_report = format_evaluation_markdown(eval_data)
+        evaluator.registry.save_evaluation(
+            eval_id=eval_id,
+            name=eval_name,
+            candidate_ids=[cand.id],
+            split="dev",
+            mode="official",
+            snapshot_hash="sub_snap_hash",
+            sample_count=2,
+            results_json=json.dumps(eval_data),
+            report_md=md_report,
+            status="completed_with_errors",
+        )
+
+        loaded = self.registry.get_evaluation(eval_id)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["status"], "completed_with_errors")
+        self.assertTrue(loaded["has_processing_errors"])
+        self.assertIn("File not found", loaded["report_markdown"])
+        self.assertIn("N/A", loaded["report_markdown"])
+
 
 if __name__ == "__main__":
     unittest.main()

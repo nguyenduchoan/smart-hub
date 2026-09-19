@@ -1,6 +1,7 @@
 """Comprehensive integration tests for Smart Hub Dashboard FastAPI endpoints and security."""
 import base64
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -21,6 +22,7 @@ try:
         Appliance,
         ApplianceCategory,
         CodeRevision,
+        CommandState,
         DeviceStorage,
         GatewayInfo,
     )
@@ -62,17 +64,22 @@ class DashboardAPITests(unittest.TestCase):
         self.client = TestClient(self.app, base_url="http://testserver")
         self.headers = {"X-CSRF-Token": CSRF_TOKEN}
 
-        # Isolate recording service root to temporary directory
+        # Isolate recording service root and child study to temporary directory
         from smart_hub.dashboard.routes.recording import RECORDING_SERVICE
         self.rec_root = Path(self.tmp_dir.name) / "recordings"
         self.rec_root.mkdir(parents=True, exist_ok=True)
+        self.child_study_root = Path(self.tmp_dir.name) / "child-study"
+        self.child_study_root.mkdir(parents=True, exist_ok=True)
         self.orig_rec_root = RECORDING_SERVICE.recordings_root
+        self.orig_child_study_dir = RECORDING_SERVICE.child_study_dir
         RECORDING_SERVICE.recordings_root = self.rec_root
+        RECORDING_SERVICE.child_study_dir = self.child_study_root
 
     def tearDown(self):
         from smart_hub.dashboard.routes.recording import RECORDING_SERVICE
         RECORDING_SERVICE.stop()
         RECORDING_SERVICE.recordings_root = self.orig_rec_root
+        RECORDING_SERVICE.child_study_dir = self.orig_child_study_dir
         self.env_patcher.stop()
         self.patcher.stop()
         self.tmp_dir.cleanup()
@@ -657,7 +664,7 @@ class DashboardAPITests(unittest.TestCase):
         # 1. Start mock recording session with manual_advance=True, takes_planned=2
         res = self.client.post("/api/recording/start", json={
             "speaker": "child",
-            "speaker_id": "child_v301_api",
+            "speaker_id": "child_v301_isolated",
             "split": "pilot",
             "phrase": "Maika ơi",
             "label": "positive",
@@ -765,6 +772,26 @@ class DashboardAPITests(unittest.TestCase):
         }, headers=self.headers)
         self.assertEqual(r_not_waiting.status_code, 409)
 
+        # 8. Assert temp child-study files exist and contain session metadata
+        temp_sess_file = self.child_study_root / "sessions.json"
+        temp_lbl_file = self.child_study_root / "labels.jsonl"
+        self.assertTrue(temp_sess_file.exists())
+        self.assertTrue(temp_lbl_file.exists())
+        temp_sessions = json.loads(temp_sess_file.read_text(encoding="utf-8"))
+        self.assertTrue(any(s.get("speaker_id") == "child_v301_isolated" for s in temp_sessions))
+
+        # 9. Assert production child-study files are completely untouched
+        prod_sess_file = ROOT / "recordings" / "child-study" / "sessions.json"
+        if prod_sess_file.exists():
+            prod_text = prod_sess_file.read_text(encoding="utf-8")
+            self.assertNotIn("child_v301_isolated", prod_text)
+            self.assertNotIn("child_v301_api", prod_text)
+        prod_lbl_file = ROOT / "recordings" / "child-study" / "labels.jsonl"
+        if prod_lbl_file.exists():
+            prod_lbl_text = prod_lbl_file.read_text(encoding="utf-8")
+            self.assertNotIn("child_v301_isolated", prod_lbl_text)
+            self.assertNotIn("child_v301_api", prod_lbl_text)
+
     def test_v3_06_strict_same_origin(self):
         # 1. Host localhost + Origin 127.0.0.1 (same port 8765) -> 403
         c_local = TestClient(self.app, base_url="http://localhost:8765")
@@ -869,6 +896,264 @@ class DashboardAPITests(unittest.TestCase):
             "timeout_seconds": 2.0,
         }, headers=self.headers)
         self.assertEqual(res_lrn.status_code, 422)
+
+    def test_v3_1_04_generic_fake_rejected_in_real_mode_at_route(self):
+        storage = DeviceStorage()
+        gw_fake = GatewayInfo(
+            id="gw_fake_route",
+            provider="generic_fake",
+            model_name="fake_hub",
+            ip_address="192.168.1.50",
+            mac="00:11:22:33:44:55",
+            devtype=0x1234,
+        )
+        storage.save_gateway(gw_fake)
+        app_fake = Appliance(
+            id="app_fake_route",
+            gateway_id=gw_fake.id,
+            name="Fake Appliance",
+            category=ApplianceCategory.CUSTOM,
+            room="Lab",
+            brand="Fake",
+            model="F1",
+        )
+        storage.save_appliance(app_fake)
+
+        raw_payload = b"\x26\x00\x10\x00\x01\x02\x03\x04"
+        rev_fake = CodeRevision(
+            id="rev_fake_route",
+            code_set_id=None,
+            appliance_id=app_fake.id,
+            button_key="power",
+            button_name="Power",
+            payload_base64=base64.b64encode(raw_payload).decode("ascii"),
+            payload_hash=CodeRevision.compute_hash(raw_payload),
+            source_type="learned",
+            is_verified=True,
+        )
+        storage.save_code_revision(rev_fake)
+
+        # Real mode (SMART_HUB_MOCK_HARDWARE=0) must reject with 422 before any I/O
+        with mock.patch.dict("os.environ", {"SMART_HUB_MOCK_HARDWARE": "0"}):
+            # 1. Gateway check -> 422
+            r_chk = self.client.post(f"/api/gateways/{gw_fake.id}/checks", headers=self.headers)
+            self.assertEqual(r_chk.status_code, 422)
+            self.assertIn("generic_fake", r_chk.text)
+
+            # 2. Action -> 422, and no ledger created
+            r_act = self.client.post(f"/api/devices/{app_fake.id}/actions", json={
+                "request_id": "req_fake_real_mode",
+                "button_key": "power",
+                "code_revision_id": rev_fake.id,
+            }, headers=self.headers)
+            self.assertEqual(r_act.status_code, 422)
+            self.assertIsNone(storage.get_ledger_entry("req_fake_real_mode"))
+
+            # 3. Learning job -> 422, and no job created
+            r_lrn = self.client.post(f"/api/devices/{app_fake.id}/learning-jobs", json={
+                "button_key": "power",
+                "button_name": "Power",
+                "timeout_seconds": 2.0,
+            }, headers=self.headers)
+            self.assertEqual(r_lrn.status_code, 422)
+
+        # Mock mode (SMART_HUB_MOCK_HARDWARE=1) allows gateway check
+        with mock.patch.dict("os.environ", {"SMART_HUB_MOCK_HARDWARE": "1"}):
+            r_chk_mock = self.client.post(f"/api/gateways/{gw_fake.id}/checks", headers=self.headers)
+            self.assertEqual(r_chk_mock.status_code, 200)
+            self.assertTrue(r_chk_mock.json()["is_online"])
+
+    def test_v3_1_06_route_level_idempotency_concurrency_race_with_spy(self):
+        import threading
+        from smart_hub.devices.providers.mock_provider import MockDeviceProvider
+
+        storage = DeviceStorage()
+        gw_race = GatewayInfo(
+            id="gw_race_spy",
+            provider="broadlink",
+            model_name="RM4 Mini",
+            ip_address="192.168.1.88",
+            mac="aa:bb:cc:dd:ee:ff",
+            devtype=0x51da,
+        )
+        storage.save_gateway(gw_race)
+        app_race = Appliance(
+            id="app_race_spy",
+            gateway_id=gw_race.id,
+            name="Race Spy Appliance",
+            category=ApplianceCategory.CUSTOM,
+            room="Lab",
+            brand="SpyBrand",
+            model="S1",
+        )
+        storage.save_appliance(app_race)
+
+        raw_payload1 = b"\x26\x00\x10\x00\x01\x02\x03\x04"
+        rev1 = CodeRevision(
+            id="rev_race_spy_1",
+            code_set_id=None,
+            appliance_id=app_race.id,
+            button_key="power",
+            button_name="Power",
+            payload_base64=base64.b64encode(raw_payload1).decode("ascii"),
+            payload_hash=CodeRevision.compute_hash(raw_payload1),
+            source_type="learned",
+            is_verified=True,
+        )
+        storage.save_code_revision(rev1)
+
+        raw_payload2 = b"\x26\x00\x10\x00\x05\x06\x07\x08"
+        rev2 = CodeRevision(
+            id="rev_race_spy_2",
+            code_set_id=None,
+            appliance_id=app_race.id,
+            button_key="mute",
+            button_name="Mute",
+            payload_base64=base64.b64encode(raw_payload2).decode("ascii"),
+            payload_hash=CodeRevision.compute_hash(raw_payload2),
+            source_type="learned",
+            is_verified=True,
+        )
+        storage.save_code_revision(rev2)
+
+        class SpyDeviceProvider(MockDeviceProvider):
+            def __init__(self, delay_event=None):
+                super().__init__()
+                self.send_code_calls = 0
+                self._spy_lock = threading.Lock()
+                self.delay_event = delay_event
+
+            def send_code(self, gateway, payload):
+                with self._spy_lock:
+                    self.send_code_calls += 1
+                if self.delay_event:
+                    self.delay_event.wait(timeout=2.0)
+                return super().send_code(gateway, payload)
+
+        delay_event = threading.Event()
+        spy_provider = SpyDeviceProvider(delay_event=delay_event)
+
+        barrier = threading.Barrier(2)
+        responses = []
+        errors = []
+
+        def worker(thread_idx):
+            client = TestClient(self.app, base_url="http://testserver")
+            try:
+                barrier.wait(timeout=3.0)
+                res = client.post(
+                    f"/api/devices/{app_race.id}/actions",
+                    json={
+                        "request_id": "req_race_concurrent_route",
+                        "button_key": "power",
+                        "code_revision_id": rev1.id,
+                        "is_test": False,
+                    },
+                    headers=self.headers,
+                )
+                responses.append((thread_idx, res))
+            except Exception as exc:
+                errors.append((thread_idx, exc))
+
+        with mock.patch("smart_hub.dashboard.routes.devices.get_provider", return_value=spy_provider):
+            t1 = threading.Thread(target=worker, args=(1,))
+            t2 = threading.Thread(target=worker, args=(2,))
+            t1.start()
+            t2.start()
+
+            # Ensure winning thread begins send_code and waits on delay_event,
+            # while second thread hits storage.claim_command concurrently
+            time.sleep(0.08)
+            delay_event.set()
+
+            t1.join(timeout=3.0)
+            t2.join(timeout=3.0)
+
+        self.assertEqual(len(errors), 0, f"Concurrent workers failed: {errors}")
+        self.assertEqual(len(responses), 2)
+
+        # 1. Provider send_code call_count is strictly 1
+        self.assertEqual(spy_provider.send_code_calls, 1)
+
+        # 2. Exactly one row in SQLite command_ledger
+        with storage._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM command_ledger WHERE request_id = 'req_race_concurrent_route'")
+            row_count = cur.fetchone()[0]
+            self.assertEqual(row_count, 1)
+
+        # 3. Both returned 200, one owned dispatch, other returned existing/in-progress result
+        statuses = [r[1].status_code for r in responses]
+        self.assertEqual(statuses, [200, 200])
+
+        acks = [r[1].json().get("gateway_ack") for r in responses]
+        self.assertIn(True, acks)
+
+        # 4. Conflict race: same request_id + different button/payload
+        conflict_spy = SpyDeviceProvider()
+        barrier_conflict = threading.Barrier(2)
+        conflict_responses = []
+
+        def worker_conflict(thread_idx, b_key, r_id):
+            client = TestClient(self.app, base_url="http://testserver")
+            try:
+                barrier_conflict.wait(timeout=3.0)
+                res = client.post(
+                    f"/api/devices/{app_race.id}/actions",
+                    json={
+                        "request_id": "req_conflict_race_route",
+                        "button_key": b_key,
+                        "code_revision_id": r_id,
+                        "is_test": False,
+                    },
+                    headers=self.headers,
+                )
+                conflict_responses.append((thread_idx, res))
+            except Exception as exc:
+                conflict_responses.append((thread_idx, exc))
+
+        with mock.patch("smart_hub.dashboard.routes.devices.get_provider", return_value=conflict_spy):
+            tc1 = threading.Thread(target=worker_conflict, args=(1, "power", rev1.id))
+            tc2 = threading.Thread(target=worker_conflict, args=(2, "mute", rev2.id))
+            tc1.start()
+            tc2.start()
+            tc1.join(timeout=3.0)
+            tc2.join(timeout=3.0)
+
+        conflict_codes = {r[1].status_code for r in conflict_responses}
+        self.assertIn(409, conflict_codes)
+        self.assertLessEqual(conflict_spy.send_code_calls, 1)
+
+        # 5. Retry on existing states (PREPARED, DISPATCHING, DELIVERED, UNKNOWN) must NOT dispatch again
+        retry_spy = SpyDeviceProvider()
+        with mock.patch("smart_hub.dashboard.routes.devices.get_provider", return_value=retry_spy):
+            for test_state in [CommandState.PREPARED, CommandState.DISPATCHING, CommandState.DELIVERED, CommandState.UNKNOWN]:
+                state_req_id = f"req_state_test_{test_state.value}"
+                # Seed ledger entry in that state
+                storage.claim_command(
+                    request_id=state_req_id,
+                    gateway_id=gw_race.id,
+                    appliance_id=app_race.id,
+                    button_key="power",
+                    code_revision_id=rev1.id,
+                    payload_digest=hashlib.sha256(f"{app_race.id}:{gw_race.id}:power:{rev1.id}:{rev1.payload_hash}".encode("utf-8")).hexdigest(),
+                )
+                storage.update_command_state(state_req_id, test_state)
+
+                calls_before = retry_spy.send_code_calls
+                res_retry = self.client.post(
+                    f"/api/devices/{app_race.id}/actions",
+                    json={
+                        "request_id": state_req_id,
+                        "button_key": "power",
+                        "code_revision_id": rev1.id,
+                        "is_test": False,
+                    },
+                    headers=self.headers,
+                )
+                self.assertEqual(res_retry.status_code, 200)
+                # Ensure no additional call to send_code occurred
+                self.assertEqual(retry_spy.send_code_calls, calls_before)
 
 
 if __name__ == "__main__":

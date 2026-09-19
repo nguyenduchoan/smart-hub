@@ -1386,8 +1386,10 @@ def format_evaluation_markdown(results):
                 tx = f"error: {escape_markdown(str(res.get('error')))}"
             else:
                 tx = "-"
-            dec = f"{res.get('decode_seconds', 0.0):.3f}" if res.get("decode_seconds") is not None else "N/A"
-            rtf_val = f"{res.get('decode_rtf', 0.0):.3f}" if res.get("decode_rtf") is not None else "N/A"
+            decode_seconds = res.get("decode_seconds")
+            dec = f"{decode_seconds:.3f}" if decode_seconds is not None else "N/A"
+            decode_rtf = res.get("decode_rtf")
+            rtf_val = f"{decode_rtf:.3f}" if decode_rtf is not None else "N/A"
             lines.append(
                 f"| `{escape_markdown(sid)}` | `{lbl}` | `{p}` | {ev} | **{st}** | {tx} | {dec} | {rtf_val} |"
             )

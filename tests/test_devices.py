@@ -750,30 +750,31 @@ class ProviderCapabilityAndRoutingTests(unittest.TestCase):
             mac="",  # No MAC required for T35 generic fake provider
             devtype=0,
         )
-        provider = get_provider_for_gateway(gw)
-        self.assertIsInstance(provider, GenericFakeProvider)
+        with mock.patch.dict("os.environ", {"SMART_HUB_MOCK_HARDWARE": "1"}):
+            provider = get_provider_for_gateway(gw)
+            self.assertIsInstance(provider, GenericFakeProvider)
 
-        # Capability assertions
-        self.assertTrue(provider.has_capability(ProviderCapability.DIRECT_COMMAND))
-        self.assertTrue(provider.has_capability(ProviderCapability.STATE_QUERY))
-        self.assertFalse(provider.has_capability(ProviderCapability.IR_SEND))
-        self.assertFalse(provider.has_capability(ProviderCapability.IR_LEARN))
+            # Capability assertions
+            self.assertTrue(provider.has_capability(ProviderCapability.DIRECT_COMMAND))
+            self.assertTrue(provider.has_capability(ProviderCapability.STATE_QUERY))
+            self.assertFalse(provider.has_capability(ProviderCapability.IR_SEND))
+            self.assertFalse(provider.has_capability(ProviderCapability.IR_LEARN))
 
-        # Check gateway
-        chk = provider.check_gateway(gw)
-        self.assertTrue(chk.is_online)
-        self.assertEqual(chk.status, GatewayStatus.ONLINE)
+            # Check gateway
+            chk = provider.check_gateway(gw)
+            self.assertTrue(chk.is_online)
+            self.assertEqual(chk.status, GatewayStatus.ONLINE)
 
-        # Direct command dispatch returns observed state
-        res = provider.send_direct_command(gw, "set_temperature", {"temperature": 25, "mode": "cool"})
-        self.assertTrue(res["success"])
-        self.assertEqual(res["observed_state"]["temperature"], 25)
-        self.assertEqual(res["observed_state"]["mode"], "cool")
+            # Direct command dispatch returns observed state
+            res = provider.send_direct_command(gw, "set_temperature", {"temperature": 25, "mode": "cool"})
+            self.assertTrue(res["success"])
+            self.assertEqual(res["observed_state"]["temperature"], 25)
+            self.assertEqual(res["observed_state"]["mode"], "cool")
 
-        # Query state returns observed state
-        state = provider.query_state(gw)
-        self.assertEqual(state["temperature"], 25)
-        self.assertEqual(state["mode"], "cool")
+            # Query state returns observed state
+            state = provider.query_state(gw)
+            self.assertEqual(state["temperature"], 25)
+            self.assertEqual(state["mode"], "cool")
 
     def test_v3_08_provider_factory_resolution_rules(self):
         # 1. Broadlink in mock mode returns MockDeviceProvider
@@ -792,6 +793,29 @@ class ProviderCapabilityAndRoutingTests(unittest.TestCase):
         gw_unknown = GatewayInfo(id="gw_u", provider="unsupported_custom_provider", model_name="Box", ip_address="127.0.0.1", mac="11:22:33:44:55:66", devtype=0x51da)
         with self.assertRaises(UnsupportedProviderError):
             get_provider_for_gateway(gw_unknown)
+
+    def test_v3_1_04_generic_fake_policy_enforcement(self):
+        gw_fake = GatewayInfo(
+            id="gw_fake_policy",
+            provider="generic_fake",
+            model_name="fake_iot_hub",
+            ip_address="192.168.1.200",
+            mac="",
+            devtype=0,
+        )
+        # Mock mode allows generic_fake
+        with mock.patch.dict("os.environ", {"SMART_HUB_MOCK_HARDWARE": "1"}):
+            p = get_provider_for_gateway(gw_fake)
+            self.assertIsInstance(p, GenericFakeProvider)
+
+        # Real mode (0 or unset) rejects generic_fake with UnsupportedProviderError
+        with mock.patch.dict("os.environ", {"SMART_HUB_MOCK_HARDWARE": "0"}):
+            with self.assertRaises(UnsupportedProviderError):
+                get_provider_for_gateway(gw_fake)
+
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with self.assertRaises(UnsupportedProviderError):
+                get_provider_for_gateway(gw_fake)
 
 
 if __name__ == "__main__":

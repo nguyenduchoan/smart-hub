@@ -120,12 +120,14 @@ class RecordingService:
         audio_device: Optional[str] = None,
         playback_device: Optional[str] = None,
         recordings_root: Optional[Path] = None,
+        child_study_dir: Optional[Path] = None,
         lease_timeout_seconds: float = 120.0,
     ):
         self.app_config = config or load_config()
         self.audio_device = audio_device or self.app_config.device
         self.playback_device = playback_device or self.app_config.playback_device
         self.recordings_root = Path(recordings_root) if recordings_root else (ROOT / "recordings")
+        self._child_study_dir = Path(child_study_dir) if child_study_dir else None
         self.lease_timeout_seconds = lease_timeout_seconds
 
         self.state: RecordingState = RecordingState.IDLE
@@ -144,6 +146,16 @@ class RecordingService:
         self._audio_res_lock = None
 
         self.recover_interrupted_sessions()
+
+    @property
+    def child_study_dir(self) -> Path:
+        if self._child_study_dir is not None:
+            return self._child_study_dir
+        return self.recordings_root / "child-study"
+
+    @child_study_dir.setter
+    def child_study_dir(self, val: Optional[Path]):
+        self._child_study_dir = Path(val) if val else None
 
     def recover_interrupted_sessions(self):
         """Scan recordings directory for any session left in active state upon server restart."""
@@ -281,7 +293,8 @@ class RecordingService:
     def _sync_child_study(self):
         if not self.session_config or self.session_config.no_sync or not self.session_dir:
             return
-        ensure_child_study_dirs()
+        cs_dir = self.child_study_dir
+        ensure_child_study_dirs(cs_dir)
         try:
             rel_dir = str(self.session_dir.relative_to(ROOT))
         except ValueError:
@@ -334,7 +347,14 @@ class RecordingService:
             )
             label_entries.append(label_entry)
 
-        save_session_and_labels(session_record, label_entries)
+        sessions_file = cs_dir / "sessions.json"
+        labels_file = cs_dir / "labels.jsonl"
+        save_session_and_labels(
+            session_record,
+            label_entries,
+            sessions_file=sessions_file,
+            labels_file=labels_file,
+        )
 
     def _run_session_worker(self):
         try:

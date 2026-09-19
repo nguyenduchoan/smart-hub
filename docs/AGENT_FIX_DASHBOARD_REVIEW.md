@@ -476,7 +476,7 @@ Các test tách lớp để chẩn đoán lỗi: T07 kiểm endpoint + dataset c
 | AC-25 | Snapshot benchmark bất biến, chặn reference leakage | T26, T27, T34 |
 | AC-26 | Lock/cancel/single-instance hoạt động liên tiến trình | T19, T20, T31, T32 |
 | AC-27 | CLI dùng cùng quy tắc thu/review và giữ flags cũ | Parity test CLI/service/API |
-| AC-28 | Core có capability/action/state contract không bắt mọi provider dùng IR | T35 |
+| AC-28 | Core có capability/action/state contract không bắt mọi provider dùng IR | T35 (partial / interface foundation) |
 
 ## Test plan sau khi sửa
 

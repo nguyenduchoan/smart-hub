@@ -37,9 +37,13 @@ def get_provider_for_gateway(gateway: GatewayInfo) -> BaseDeviceProvider:
         )
 
     if provider_name == "generic_fake":
-        return GenericFakeProvider()
+        if os.environ.get("SMART_HUB_MOCK_HARDWARE") == "1":
+            return GenericFakeProvider()
+        raise UnsupportedProviderError(
+            "Provider 'generic_fake' chỉ được phép sử dụng trong môi trường giả lập (SMART_HUB_MOCK_HARDWARE=1)."
+        )
 
     raise UnsupportedProviderError(
         f"Provider '{gateway.provider}' không được hỗ trợ hoặc không xác định. "
-        f"Chỉ hỗ trợ 'broadlink' (hoặc 'mock' khi bật SMART_HUB_MOCK_HARDWARE=1)."
+        f"Chỉ hỗ trợ 'broadlink' (hoặc 'mock' / 'generic_fake' khi bật SMART_HUB_MOCK_HARDWARE=1)."
     )

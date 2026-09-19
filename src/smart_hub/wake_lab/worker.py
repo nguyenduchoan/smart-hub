@@ -4,6 +4,7 @@ Runs in the configured audio Python environment (.venv) where ML/audio dependenc
 from datetime import datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -223,8 +224,12 @@ def run_candidate_evaluation(
                             if (channels, sampwidth, rate, comptype) != (1, 2, 16000, "NONE"):
                                 integrity_error = f"WAV không đúng chuẩn 16kHz mono 16-bit PCM: {wav_path} (channels={channels}, sampwidth={sampwidth}, rate={rate}, comp={comptype})"
                             else:
+                                expected_pcm_bytes = nframes * channels * sampwidth
                                 pcm = wf.readframes(nframes)
-                                if len(pcm) == 0:
+                                actual_pcm_bytes = len(pcm)
+                                if actual_pcm_bytes != expected_pcm_bytes:
+                                    integrity_error = f"Truncated PCM audio in {wav_path}: expected {expected_pcm_bytes} bytes, got {actual_pcm_bytes}"
+                                elif actual_pcm_bytes == 0:
                                     integrity_error = f"Empty PCM audio in {wav_path}"
                     except Exception as exc:
                         integrity_error = f"WAV unreadable or corrupt: {exc}"
@@ -233,10 +238,44 @@ def run_candidate_evaluation(
                 if not integrity_error:
                     try:
                         feat = features(pcm)
-                        if not np.all(np.isfinite(feat)) or feat.ndim != 2:
-                            integrity_error = "Feature extraction produced non-finite values or invalid shape"
+                        if (
+                            not hasattr(feat, "ndim")
+                            or feat.ndim != 2
+                            or feat.shape[1] != 26
+                            or len(feat) < 10
+                            or not np.all(np.isfinite(feat))
+                        ):
+                            integrity_error = f"Feature extraction produced invalid shape or non-finite values (shape={getattr(feat, 'shape', None)})"
                     except Exception as exc:
                         integrity_error = f"Feature extraction failed: {exc}"
+
+                if not integrity_error:
+                    try:
+                        sims = []
+                        for t in templates:
+                            if (
+                                not hasattr(t, "ndim")
+                                or t.ndim != 2
+                                or t.shape[1] != 26
+                                or len(t) < 10
+                                or not np.all(np.isfinite(t))
+                            ):
+                                raise ValueError("Template has invalid shape or non-finite values")
+                            s_val = similarity(feat, t)
+                            if not isinstance(s_val, (int, float)) or not math.isfinite(s_val):
+                                raise ValueError(f"Similarity returned non-finite value: {s_val}")
+                            sims.append(float(s_val))
+                        sims.sort(reverse=True)
+                        if len(sims) >= 2:
+                            score = float(sum(sims[:2]) / 2)
+                        elif sims:
+                            score = float(sims[0])
+                        else:
+                            raise ValueError("No valid similarity score computed")
+                        if not math.isfinite(score):
+                            raise ValueError(f"Score is non-finite: {score}")
+                    except Exception as exc:
+                        integrity_error = f"Similarity computation failed: {exc}"
 
                 if integrity_error:
                     if expected:
@@ -255,14 +294,6 @@ def run_candidate_evaluation(
                         "actual_sha256": actual_sha,
                     }
                 else:
-                    sims = sorted([similarity(feat, t) for t in templates], reverse=True)
-                    if len(sims) >= 2:
-                        score = float(sum(sims[:2]) / 2)
-                    elif sims:
-                        score = float(sims[0])
-                    else:
-                        score = 0.0
-
                     detected = (score >= cand_threshold)
                     if detected and expected:
                         tp += 1
