@@ -6,6 +6,10 @@ models/*.npz
 models/*.onnx
 models/stt/
 config.local.json
+dashboard.local.json
+.local/
+.venv-dashboard/
+models/candidates/
 .voice-tools/
 .experiments/
 .env

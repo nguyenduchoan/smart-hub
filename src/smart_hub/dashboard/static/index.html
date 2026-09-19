@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Hub - Local Dashboard</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <!-- Header & Live Indicators -->
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="logo-icon">🏠</div>
+      <div>
+        <h1 class="brand-title">Smart Hub</h1>
+        <div class="brand-sub">Local Dashboard · Broadlink RM4 · Thu âm · Wake Lab</div>
+      </div>
+    </div>
+    <div class="header-status">
+      <div class="status-badge" id="badge-mic">
+        <span class="status-dot dot-free"></span> Mic: <strong id="status-mic-text">Rảnh</strong>
+      </div>
+      <div class="status-badge" id="badge-gateway">
+        <span class="status-dot dot-offline"></span> RM4: <strong id="status-gw-text">Chưa kết nối</strong>
+      </div>
+    </div>
+  </header>
+
+  <!-- Navigation Bar -->
+  <nav class="app-nav">
+    <button class="nav-btn active" data-tab="overview">📊 Tổng quan</button>
+    <button class="nav-btn" data-tab="devices">📡 Thiết bị & IR</button>
+    <button class="nav-btn" data-tab="recording">🎙️ Thu âm</button>
+    <button class="nav-btn" data-tab="data">📁 Dữ liệu & Duyệt</button>
+    <button class="nav-btn" data-tab="wake">🧠 Wake Word</button>
+    <button class="nav-btn" data-tab="results">📈 Kết quả & So sánh</button>
+  </nav>
+
+  <!-- Notification Banner -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Main Content Tabs -->
+  <main class="app-main">
+
+    <!-- 1. TỔNG QUAN (Overview) -->
+    <section id="tab-overview" class="tab-pane active">
+      <div class="section-title-row">
+        <h2>Tổng quan hệ thống local</h2>
+        <button class="btn btn-secondary" id="btn-refresh-overview">🔄 Làm mới</button>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-num" id="overview-gw-count">0</div>
+          <div class="stat-label">Broadlink Gateway</div>
+          <div class="stat-sub" id="overview-gw-sub">0 online</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num" id="overview-dev-count">0</div>
+          <div class="stat-label">Thiết bị gia dụng</div>
+          <div class="stat-sub">Đã ghép bộ mã IR</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num" id="overview-samples-count">0</div>
+          <div class="stat-label">Tổng mẫu giọng</div>
+          <div class="stat-sub" id="overview-accepted-sub">0 đã duyệt accepted</div>
+        </div>
+        <div class="stat-card stat-alert">
+          <div class="stat-num" id="overview-pending-count">0</div>
+          <div class="stat-label">Mẫu chờ duyệt thủ công</div>
+          <div class="stat-sub">Cần người nghe xác nhận</div>
+        </div>
+      </div>
+
+      <div class="overview-panels">
+        <div class="card">
+          <h3>Hướng dẫn nhanh luồng sử dụng</h3>
+          <ol class="guide-steps">
+            <li><strong>Broadlink:</strong> Vào tab <em>Thiết bị & IR</em> → Bấm <em>"Tìm Broadlink"</em> hoặc nhập IP RM4 mini → Thêm TV/Quạt/Điều hòa từ Catalog hoặc học từ remote gốc.</li>
+            <li><strong>Thu âm:</strong> Vào tab <em>Thu âm</em> → Chọn Người lớn hoặc Bé → Bắt đầu phiên thu và theo dõi tiếng tít → Duyệt từng lượt.</li>
+            <li><strong>Duyệt mẫu:</strong> Vào tab <em>Dữ liệu</em> → Nghe lại WAV → Bắt buộc xác nhận người nói & nội dung để đưa vào tập chính thức.</li>
+            <li><strong>Wake Word:</strong> Vào tab <em>Wake Word</em> → Chọn baseline STT hoặc tạo candidate mới từ mẫu đã duyệt → Đánh giá offline không ảnh hưởng runtime.</li>
+          </ol>
+        </div>
+
+        <div class="card">
+          <h3>Trạng thái cổng kết nối local</h3>
+          <table class="simple-table">
+            <tr>
+              <td>Host loopback</td>
+              <td><code>127.0.0.1:8765</code> (An toàn, không public Internet)</td>
+            </tr>
+            <tr>
+              <td>Giao thức RM4 mini</td>
+              <td>LAN UDP (python-broadlink), không phụ thuộc cloud khi gửi IR</td>
+            </tr>
+            <tr>
+              <td>Bảo mật mutation</td>
+              <td>CSRF token + Origin validation + SQLite Write-Ahead Log</td>
+            </tr>
+            <tr>
+              <td>Dữ liệu âm thanh</td>
+              <td>WAV 16kHz 16-bit mono; file gốc bất biến; mã hóa hash SHA-256</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. THIẾT BỊ & IR (Devices, Gateway, Catalog, Remote Panel) -->
+    <section id="tab-devices" class="tab-pane">
+      <div class="section-title-row">
+        <h2>Quản lý Gateway & Bộ điều khiển IR</h2>
+        <div class="btn-group">
+          <button class="btn btn-secondary" id="btn-open-gw-modal">➕ Kết nối RM4 mini</button>
+          <button class="btn btn-primary" id="btn-open-dev-modal">➕ Thêm thiết bị gia dụng</button>
+        </div>
+      </div>
+
+      <!-- Gateway summary row -->
+      <div class="card mb-4">
+        <div class="card-header-flex">
+          <h3>Broadlink Gateways đã lưu</h3>
+          <button class="btn btn-sm btn-secondary" id="btn-refresh-gateways">Kiểm tra kết nối</button>
+        </div>
+        <div id="gateways-list" class="gateways-cards-container">
+          <div class="empty-state">Đang tải danh sách gateway...</div>
+        </div>
+      </div>
+
+      <!-- Appliances list & Remote interactive panels -->
+      <div class="devices-layout">
+        <div class="devices-sidebar">
+          <h3>Danh sách thiết bị</h3>
+          <div id="appliances-list" class="appliances-nav-list">
+            <div class="empty-state">Chưa có thiết bị nào. Hãy bấm "Thêm thiết bị gia dụng".</div>
+          </div>
+        </div>
+
+        <div class="devices-main-panel">
+          <div id="appliance-panel-placeholder" class="empty-card">
+            <div class="empty-icon">📺</div>
+            <p>Chọn một thiết bị từ danh sách bên trái hoặc tạo thiết bị mới để mở bảng điều khiển từ xa.</p>
+          </div>
+
+          <div id="appliance-active-panel" class="appliance-panel card" style="display: none;">
+            <div class="panel-header">
+              <div>
+                <h3 id="panel-dev-name">Điều hòa Daikin</h3>
+                <div class="panel-dev-meta" id="panel-dev-meta">Phòng khách · Hãng Daikin · Gateway: RM4</div>
+              </div>
+              <div class="panel-actions">
+                <button class="btn btn-sm btn-secondary" id="btn-panel-learn">🎯 Học thêm nút IR</button>
+                <button class="btn btn-sm btn-danger" id="btn-panel-delete">Xóa thiết bị</button>
+              </div>
+            </div>
+
+            <div class="remote-surface">
+              <div class="remote-section-title">Các nút điều khiển / Preset đã nạp</div>
+              <div id="remote-buttons-grid" class="remote-buttons-grid">
+                <!-- Dynamically populated buttons -->
+              </div>
+            </div>
+
+            <!-- Command result & Observation feedback -->
+            <div class="observation-box" id="observation-box" style="display: none;">
+              <div class="obs-title">Kết quả gửi lệnh gần nhất:</div>
+              <div class="obs-result-text" id="obs-result-text">Đã gửi tới RM4 (nhận ACK).</div>
+              <div class="obs-prompt">Thiết bị thực tế có phản hồi đúng chức năng không?</div>
+              <div class="obs-buttons">
+                <button class="btn btn-success btn-sm" id="btn-obs-accurate">✅ Đúng chức năng</button>
+                <button class="btn btn-danger btn-sm" id="btn-obs-inaccurate">❌ Sai / Không phản hồi</button>
+                <button class="btn btn-secondary btn-sm" id="btn-obs-unknown">❓ Chưa rõ</button>
+              </div>
+            </div>
+
+            <!-- Observations log -->
+            <div class="recent-obs-section mt-4">
+              <h4>Lịch sử gửi & quan sát thực tế</h4>
+              <div id="recent-obs-list" class="recent-obs-list">
+                <!-- Dynamically populated observations -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. THU ÂM (Audio Recording) -->
+    <section id="tab-recording" class="tab-pane">
+      <div class="section-title-row">
+        <h2>Thu âm mẫu câu gọi (Adult & Child Voice Study)</h2>
+      </div>
+
+      <div class="recording-layout">
+        <!-- Setup form -->
+        <div class="card recording-form-card">
+          <h3>Thiết lập phiên thu mới</h3>
+          <form id="form-start-recording">
+            <div class="form-group">
+              <label>Đối tượng người nói:</label>
+              <div class="radio-row">
+                <label><input type="radio" name="speaker" value="child" checked> Trẻ em (child)</label>
+                <label><input type="radio" name="speaker" value="adult"> Người lớn (adult)</label>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="rec-speaker-id">Mã người nói (speaker_id):</label>
+              <input type="text" id="rec-speaker-id" class="form-control" value="child_01" required>
+              <small class="form-hint">Nhãn định danh người nói, ví dụ child_01, adult_01.</small>
+            </div>
+
+            <div class="form-group">
+              <label for="rec-split">Tập phân chia dữ liệu (split):</label>
+              <select id="rec-split" class="form-control">
+                <option value="pilot">pilot (thử nghiệm khám phá)</option>
+                <option value="dev" selected>dev (tinh chỉnh & phát triển)</option>
+                <option value="test">test (kiểm thử giữ riêng - không dùng cho enrollment)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label>Loại câu gọi & nhãn:</label>
+              <div class="radio-row">
+                <label><input type="radio" name="rec-label-type" value="positive" checked> Câu dương tính ('Maika ơi')</label>
+                <label><input type="radio" name="rec-label-type" value="negative"> Câu âm tính preset</label>
+              </div>
+            </div>
+
+            <div class="form-group" id="group-negative-preset" style="display: none;">
+              <label for="rec-preset-select">Chọn câu âm tính preset:</label>
+              <select id="rec-preset-select" class="form-control">
+                <option value="1">1: Maika</option>
+                <option value="2">2: Mai ca</option>
+                <option value="3">3: Mai ơi</option>
+                <option value="4">4: Mẹ ơi</option>
+                <option value="5">5: Ba ơi</option>
+                <option value="6">6: Mai đi chơi</option>
+                <option value="7">7: Con chơi nữa</option>
+                <option value="8">8: Bật đèn phòng khách</option>
+                <option value="9">9: Tắt quạt</option>
+                <option value="10">10: Em nghe</option>
+              </select>
+            </div>
+
+            <div class="form-group" id="group-custom-phrase">
+              <label for="rec-phrase">Câu yêu cầu nói:</label>
+              <input type="text" id="rec-phrase" class="form-control" value="Maika ơi" required>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group col">
+                <label for="rec-takes">Số lượt thu:</label>
+                <input type="number" id="rec-takes" class="form-control" value="5" min="1" max="20">
+              </div>
+              <div class="form-group col">
+                <label for="rec-distance">Khoảng cách (m):</label>
+                <input type="number" id="rec-distance" class="form-control" value="1.0" step="0.1" min="0.2">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label><input type="checkbox" id="rec-manual-advance" checked> Chế độ chủ động (Chờ bấm "Bắt đầu lượt tiếp theo" để bé chuẩn bị)</label>
+            </div>
+
+            <div class="form-group">
+              <label><input type="checkbox" id="rec-mock-mode"> Chế độ giả lập (Mock - không mở mic thật, dùng cho kiểm thử UI)</label>
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-block" id="btn-start-session">🚀 Bắt đầu phiên thu</button>
+          </form>
+        </div>
+
+        <!-- Live studio panel -->
+        <div class="card recording-studio-card">
+          <div class="studio-header">
+            <h3>Phòng thu âm local</h3>
+            <div class="session-badge" id="rec-state-badge">IDLE</div>
+          </div>
+
+          <div class="studio-status-box" id="studio-status-box">
+            <div class="studio-prompt" id="studio-prompt">Chưa có phiên thu nào đang chạy. Hãy thiết lập ở cột bên trái.</div>
+            <div class="studio-progress" id="studio-progress">Lượt: 0 / 0</div>
+          </div>
+
+          <div class="studio-controls">
+            <button class="btn btn-success btn-lg" id="btn-advance-take" disabled>▶️ Bắt đầu lượt tiếp theo</button>
+            <button class="btn btn-danger" id="btn-stop-session" disabled>⏹️ Dừng phiên thu</button>
+          </div>
+
+          <!-- Real-time clips in this session -->
+          <div class="studio-clips-section mt-4">
+            <h4>Các lượt đã thu trong phiên</h4>
+            <div id="studio-clips-list" class="studio-clips-list">
+              <!-- Dynamically populated takes -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. DỮ LIỆU & DUYỆT (Dataset & Review) -->
+    <section id="tab-data" class="tab-pane">
+      <div class="section-title-row">
+        <h2>Quản lý dữ liệu & Duyệt thủ công (Manual Review)</h2>
+        <button class="btn btn-secondary" id="btn-refresh-samples">🔄 Tải lại dữ liệu</button>
+      </div>
+
+      <!-- Filters bar -->
+      <div class="card filter-bar mb-4">
+        <div class="filter-row">
+          <div class="filter-col">
+            <label>Đối tượng:</label>
+            <select id="filter-speaker" class="form-control form-control-sm">
+              <option value="">Tất cả</option>
+              <option value="child">Trẻ em (child)</option>
+              <option value="adult">Người lớn (adult)</option>
+            </select>
+          </div>
+          <div class="filter-col">
+            <label>Split:</label>
+            <select id="filter-split" class="form-control form-control-sm">
+              <option value="">Tất cả</option>
+              <option value="pilot">pilot</option>
+              <option value="dev">dev</option>
+              <option value="test">test</option>
+            </select>
+          </div>
+          <div class="filter-col">
+            <label>Trạng thái duyệt:</label>
+            <select id="filter-status" class="form-control form-control-sm">
+              <option value="">Tất cả</option>
+              <option value="captured_pending_review">Chờ duyệt</option>
+              <option value="accepted">Đã chấp nhận (Accepted)</option>
+              <option value="needs_review">Cần xem lại</option>
+              <option value="rejected">Từ chối</option>
+            </select>
+          </div>
+          <div class="filter-col">
+            <label>Nhãn:</label>
+            <select id="filter-label" class="form-control form-control-sm">
+              <option value="">Tất cả</option>
+              <option value="positive">positive (dương)</option>
+              <option value="negative">negative (âm)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Samples Table -->
+      <div class="card">
+        <div class="card-header-flex">
+          <h3 id="samples-count-header">Danh sách mẫu (0 mẫu)</h3>
+          <div class="table-legend">
+            <span class="badge badge-success">Accepted</span>
+            <span class="badge badge-warning">Pending</span>
+            <span class="badge badge-danger">Rejected</span>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="data-table" id="samples-table">
+            <thead>
+              <tr>
+                <th>Sample ID</th>
+                <th>Người nói</th>
+                <th>Split</th>
+                <th>Nhãn</th>
+                <th>Câu mong đợi</th>
+                <th>Trạng thái duyệt</th>
+                <th>Speaker Confirmed</th>
+                <th>Thao tác</th>
+              </tr>
+            </thead>
+            <tbody id="samples-tbody">
+              <tr><td colspan="8" class="text-center">Đang tải dữ liệu...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. WAKE WORD LAB (Candidates & Registry) -->
+    <section id="tab-wake" class="tab-pane">
+      <div class="section-title-row">
+        <h2>Wake Word Lab · Quản lý ứng viên model</h2>
+        <button class="btn btn-primary" id="btn-open-create-candidate">➕ Tạo ứng viên từ mẫu đã duyệt</button>
+      </div>
+
+      <div class="card mb-4">
+        <h3>Danh sách Model & Ứng viên (Wake Candidates)</h3>
+        <p class="text-muted">Các candidate độc lập với runtime hiện tại; không làm thay đổi model đang chạy của assistant.</p>
+        <div id="candidates-grid" class="candidates-grid">
+          <!-- Dynamically populated candidates -->
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. KẾT QUẢ & SO SÁNH (Evaluation & Benchmark) -->
+    <section id="tab-results" class="tab-pane">
+      <div class="section-title-row">
+        <h2>Kết quả đánh giá offline (Offline Benchmark)</h2>
+        <button class="btn btn-primary" id="btn-open-run-eval">🔬 Chạy bài đánh giá mới</button>
+      </div>
+
+      <div class="results-layout">
+        <div class="results-sidebar">
+          <h3>Các bài đánh giá đã lưu</h3>
+          <div id="evaluations-history-list" class="evaluations-history-list">
+            <!-- Dynamically populated evaluations list -->
+          </div>
+        </div>
+
+        <div class="results-main-view">
+          <div id="eval-view-placeholder" class="empty-card">
+            <div class="empty-icon">📊</div>
+            <p>Chọn một bài đánh giá từ danh sách bên trái hoặc bấm "Chạy bài đánh giá mới" để so sánh các candidate.</p>
+          </div>
+
+          <div id="eval-active-view" class="card" style="display: none;">
+            <div class="card-header-flex">
+              <div>
+                <h3 id="eval-view-title">Đánh giá dev</h3>
+                <div class="text-muted" id="eval-view-meta">Snapshot: 16 mẫu · Split: dev · Mode: official</div>
+              </div>
+              <button class="btn btn-sm btn-secondary" id="btn-download-eval-md">📥 Tải báo cáo Markdown</button>
+            </div>
+
+            <!-- Comparison Table -->
+            <div class="mt-4">
+              <h4>Bảng so sánh tổng hợp</h4>
+              <div class="table-responsive">
+                <table class="data-table" id="eval-summary-table">
+                  <thead>
+                    <tr>
+                      <th>Profile / Candidate</th>
+                      <th>Tổng nhận đúng (dương)</th>
+                      <th>Bé nhận đúng</th>
+                      <th>Người lớn nhận đúng</th>
+                      <th>Bỏ sót FRR</th>
+                      <th>Báo nhầm FAR (âm)</th>
+                      <th>Lặp event</th>
+                      <th>Decode RTF</th>
+                      <th>Lỗi</th>
+                    </tr>
+                  </thead>
+                  <tbody id="eval-summary-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Markdown Report Preview -->
+            <div class="mt-4">
+              <h4>Chi tiết báo cáo (Markdown Preview)</h4>
+              <pre id="eval-md-preview" class="code-block"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- MODALS -->
+
+  <!-- Modal 1: Gateway Connect / Discover -->
+  <div id="modal-gateway" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Kết nối Broadlink RM4 mini</h3>
+        <button class="modal-close" data-close="modal-gateway">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="tab-group-small">
+          <button class="tab-small-btn active" id="tab-gw-scan-btn">Quét trên LAN</button>
+          <button class="tab-small-btn" id="tab-gw-ip-btn">Nhập IP trực tiếp</button>
+        </div>
+
+        <!-- Scan section -->
+        <div id="gw-scan-section">
+          <p class="text-muted">Đảm bảo RM4 mini đã cấp nguồn, kết nối cùng mạng Wi-Fi 2.4GHz với máy Smart Hub và đã tắt 'Lock device' trong app.</p>
+          <button class="btn btn-secondary btn-block" id="btn-trigger-scan">🔍 Bắt đầu quét mạng LAN (5s)</button>
+          <div id="scan-results-box" class="scan-results-box mt-3"></div>
+        </div>
+
+        <!-- Direct IP section -->
+        <div id="gw-ip-section" style="display: none;">
+          <div class="form-group">
+            <label for="input-gw-ip">Địa chỉ IP của RM4 mini:</label>
+            <input type="text" id="input-gw-ip" class="form-control" placeholder="192.168.1.xxx">
+          </div>
+          <button class="btn btn-secondary btn-block" id="btn-trigger-ip-probe">Kiểm tra kết nối IP</button>
+          <div id="ip-probe-results-box" class="scan-results-box mt-3"></div>
+        </div>
+
+        <!-- Save form (shown once device found/probed) -->
+        <div id="gw-save-form" class="mt-4" style="display: none;">
+          <h4>Lưu Gateway</h4>
+          <div class="form-group">
+            <label for="save-gw-name">Tên hiển thị:</label>
+            <input type="text" id="save-gw-name" class="form-control" value="RM4 mini Phòng Khách">
+          </div>
+          <div class="form-group">
+            <label for="save-gw-room">Phòng:</label>
+            <input type="text" id="save-gw-room" class="form-control" value="Phòng Khách">
+          </div>
+          <button class="btn btn-primary btn-block" id="btn-save-gateway-confirm">💾 Lưu Gateway</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 2: Thêm thiết bị gia dụng (Appliance & Catalog) -->
+  <div id="modal-appliance" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <h3>Thêm thiết bị gia dụng mới</h3>
+        <button class="modal-close" data-close="modal-appliance">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-create-appliance">
+          <div class="form-row">
+            <div class="form-group col">
+              <label for="new-dev-gateway">Chọn Gateway điều khiển:</label>
+              <select id="new-dev-gateway" class="form-control" required></select>
+            </div>
+            <div class="form-group col">
+              <label for="new-dev-category">Loại thiết bị:</label>
+              <select id="new-dev-category" class="form-control" required>
+                <option value="climate">Điều hòa (Climate / AC)</option>
+                <option value="fan">Quạt (Fan)</option>
+                <option value="tv">Tivi (TV)</option>
+                <option value="custom">Tùy chỉnh khác</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col">
+              <label for="new-dev-brand">Hãng sản xuất:</label>
+              <select id="new-dev-brand" class="form-control" required>
+                <option value="">-- Chọn hãng từ Catalog --</option>
+              </select>
+            </div>
+            <div class="form-group col">
+              <label for="new-dev-codeset">Bộ mã / Model phù hợp:</label>
+              <select id="new-dev-codeset" class="form-control" required>
+                <option value="">-- Chọn bộ mã --</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col">
+              <label for="new-dev-name">Tên thiết bị:</label>
+              <input type="text" id="new-dev-name" class="form-control" placeholder="Điều hòa Daikin Phòng Khách" required>
+            </div>
+            <div class="form-group col">
+              <label for="new-dev-room">Phòng:</label>
+              <input type="text" id="new-dev-room" class="form-control" placeholder="Phòng Khách">
+            </div>
+          </div>
+
+          <div class="catalog-preview-box" id="codeset-preview-box" style="display: none;">
+            <h4>Thông tin bộ mã đã chọn:</h4>
+            <div id="codeset-preview-content"></div>
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-block mt-3">Lưu thiết bị & Tạo bộ điều khiển</button>
+        </form>
+
+        <hr class="divider">
+        <div class="catalog-import-row">
+          <span>Hoặc nếu bạn có file JSON SmartIR:</span>
+          <button class="btn btn-sm btn-secondary" id="btn-open-catalog-import">📥 Nhập file Catalog JSON</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 3: Học mã từ remote gốc (IR Learning) -->
+  <div id="modal-learning" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Học mã IR từ remote gốc</h3>
+        <button class="modal-close" data-close="modal-learning">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="learn-btn-key">Khóa nút cần gán:</label>
+          <input type="text" id="learn-btn-key" class="form-control" placeholder="power_toggle, speed_up, fan_cool_26c">
+        </div>
+        <div class="form-group">
+          <label for="learn-btn-name">Tên nút hiển thị:</label>
+          <input type="text" id="learn-btn-name" class="form-control" placeholder="Bật / Tắt nguồn">
+        </div>
+
+        <div id="learning-status-area" class="learning-status-area mt-3" style="display: none;">
+          <div class="spinner"></div>
+          <div id="learning-status-text">Đang chuyển RM4 vào chế độ học mã (30s còn lại)...</div>
+          <p class="text-muted small">Hướng đầu phát của remote gốc vào RM4 mini (khoảng cách 5-10cm) và bấm MỘT LẦN nút cần học.</p>
+          <button class="btn btn-danger btn-sm mt-2" id="btn-cancel-learning">Hủy học mã</button>
+        </div>
+
+        <button class="btn btn-primary btn-block mt-3" id="btn-start-ir-learn">🎯 Bắt đầu học mã</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4: Duyệt thủ công (Manual Review Drawer/Modal) -->
+  <div id="modal-review" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <h3>Duyệt thủ công mẫu thu âm</h3>
+        <button class="modal-close" data-close="modal-review">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="review-sample-header">
+          <h4 id="review-sample-id">child_01-S01-t01</h4>
+          <span class="badge" id="review-current-badge">captured_pending_review</span>
+        </div>
+
+        <div class="review-audio-box">
+          <label>Nghe lại file WAV gốc:</label>
+          <audio id="review-audio-player" controls preload="auto" class="audio-player"></audio>
+        </div>
+
+        <div class="review-meta-grid">
+          <div><strong>Người nói dự kiến:</strong> <span id="rev-speaker-expected">child_01 (child)</span></div>
+          <div><strong>Câu dự kiến:</strong> <span id="rev-phrase-expected">Maika ơi</span></div>
+          <div><strong>Split:</strong> <span id="rev-split">dev</span></div>
+          <div><strong>Nhãn mong đợi:</strong> <span id="rev-label-expected">positive (1 event)</span></div>
+        </div>
+
+        <hr class="divider">
+        <h4>Xác nhận của người duyệt (Bắt buộc)</h4>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="rev-speaker-confirmed">
+            <strong>Tôi xác nhận mẫu đúng giọng người nói đã khai báo</strong>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label for="rev-transcript-confirmed">Nội dung câu nói nghe được thực tế:</label>
+          <input type="text" id="rev-transcript-confirmed" class="form-control" value="Maika ơi" required>
+          <small class="form-hint">Người duyệt cần nghe và xác nhận nội dung thực tế.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="rev-notes">Ghi chú / Lý do:</label>
+          <input type="text" id="rev-notes" class="form-control" placeholder="Âm thanh rõ, không tạp âm, không clipping...">
+        </div>
+
+        <div class="review-action-buttons">
+          <button class="btn btn-success" id="btn-decision-accept">✅ Chấp nhận (Accepted)</button>
+          <button class="btn btn-warning" id="btn-decision-needs-review">⚠️ Cần xem lại</button>
+          <button class="btn btn-danger" id="btn-decision-reject">❌ Từ chối (Reject)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 5: Tạo ứng viên Wake Word (Enrollment) -->
+  <div id="modal-candidate" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Tạo ứng viên model Wake Word mới</h3>
+        <button class="modal-close" data-close="modal-candidate">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-create-candidate">
+          <div class="form-group">
+            <label for="cand-name">Tên ứng viên:</label>
+            <input type="text" id="cand-name" class="form-control" placeholder="STT Nhạy - Giọng Bé V1" required>
+          </div>
+
+          <div class="form-group">
+            <label for="cand-profile">Profile kích hoạt:</label>
+            <select id="cand-profile" class="form-control">
+              <option value="sensitive">sensitive (ngưỡng nhạy cho trẻ em)</option>
+              <option value="standard">standard (chuẩn mực)</option>
+              <option value="custom">custom (tùy chỉnh)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="cand-threshold">Ngưỡng nhạy (Threshold):</label>
+            <input type="number" id="cand-threshold" class="form-control" value="0.45" step="0.05" min="0.1" max="1.0">
+          </div>
+
+          <div class="form-group">
+            <label for="cand-aliases">Spelling aliases bổ sung (cách nhau bởi dấu phẩy):</label>
+            <input type="text" id="cand-aliases" class="form-control" placeholder="mai ca ơi, mai ơi, mẹ ơi">
+          </div>
+
+          <div class="form-group">
+            <label>Chọn mẫu tham chiếu từ tập đã duyệt (Tập test bị khóa tự động):</label>
+            <div id="cand-sample-selector" class="sample-checkbox-list">
+              <!-- Dynamically populated accepted non-test samples -->
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-block">Lưu ứng viên vào Registry</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 6: Chạy đánh giá offline (Run Evaluation) -->
+  <div id="modal-run-eval" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Chạy bài đánh giá offline (Benchmark)</h3>
+        <button class="modal-close" data-close="modal-run-eval">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-run-evaluation">
+          <div class="form-group">
+            <label for="eval-split-select">Tập dữ liệu đánh giá:</label>
+            <select id="eval-split-select" class="form-control">
+              <option value="dev" selected>dev (phát triển & tinh chỉnh)</option>
+              <option value="pilot">pilot (khám phá)</option>
+              <option value="test">test (chốt holdout - chỉ dùng sau khi đã chốt candidate)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="eval-mode-select">Chế độ đánh giá:</label>
+            <select id="eval-mode-select" class="form-control">
+              <option value="official" selected>official (chỉ bao gồm mẫu đã ACCEPTED và SPEAKER_CONFIRMED)</option>
+              <option value="all">all (toàn bộ file WAV đọc được - dùng cho debug chẩn đoán)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Chọn các ứng viên cần so sánh:</label>
+            <div id="eval-candidate-selector" class="candidate-checkbox-list">
+              <!-- Dynamically populated candidate checkboxes -->
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="eval-custom-name">Tên bài đánh giá (tùy chọn):</label>
+            <input type="text" id="eval-custom-name" class="form-control" placeholder="So sánh standard vs sensitive trên dev">
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-block" id="btn-submit-eval">🔬 Bắt đầu chạy đánh giá</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 7: Nhập catalog JSON -->
+  <div id="modal-import-catalog" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Nhập Catalog SmartIR / Custom CodeSet</h3>
+        <button class="modal-close" data-close="modal-import-catalog">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="catalog-json-textarea">Dán nội dung JSON:</label>
+          <textarea id="catalog-json-textarea" class="form-control code-textarea" rows="12" placeholder='{"manufacturer": "Daikin", "supportedController": "Broadlink", "commands": {...}}'></textarea>
+        </div>
+        <button class="btn btn-primary btn-block" id="btn-submit-catalog-json">📥 Xác thực & Nhập Catalog</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -391,6 +391,10 @@ def main(argv=None):
     negative = sub.add_parser("enroll-negative", help="Thu tiếng nền và câu khác để giảm báo nhầm.")
     negative.add_argument("--seconds", type=positive_seconds, default=30)
     sub.add_parser("test-feedback", help="Phát thử tiếng phản hồi local, không mở microphone.")
+    dashboard = sub.add_parser("dashboard", help="Khởi chạy local dashboard (Broadlink RM4, thu âm, wake model).")
+    dashboard.add_argument("--host", default="127.0.0.1", help="Địa chỉ bind (mặc định 127.0.0.1).")
+    dashboard.add_argument("--port", type=int, default=8765, help="Cổng HTTP (mặc định 8765).")
+    dashboard.add_argument("--audio-python", default=None, help="Đường dẫn python cho audio worker.")
     args = parser.parse_args(argv)
     if args.command == "enroll" and args.fixed_windows and args.seconds < 2:
         parser.error("--fixed-windows cần --seconds >= 2.")
@@ -429,6 +433,14 @@ def main(argv=None):
                 while player.suppressing():
                     time.sleep(0.02)
             status("[PASS] Đã phát file phản hồi; cần người nghe xác nhận đầu ra loa.")
+            return 0
+        if args.command == "dashboard":
+            from .dashboard.app import create_app
+            import uvicorn
+            allowed_hosts = {args.host, "localhost", "127.0.0.1", "::1", "testserver"}
+            app = create_app(allowed_hosts=allowed_hosts)
+            status(f"[DASHBOARD] Khởi chạy tại http://{args.host}:{args.port}")
+            uvicorn.run(app, host=args.host, port=args.port, log_level="info")
             return 0
         return validate_live(config, args)
     except KeyboardInterrupt:
