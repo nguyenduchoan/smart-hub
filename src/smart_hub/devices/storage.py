@@ -130,11 +130,63 @@ class DeviceStorage:
                 sent_at TEXT NOT NULL,
                 completed_at TEXT,
                 error_message TEXT,
-                raw_ack TEXT
+                raw_ack TEXT,
+                payload_digest TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_ledger_req ON command_ledger(request_id);
             CREATE INDEX IF NOT EXISTS idx_ledger_state ON command_ledger(state);
             """)
+
+            # Schema migrations for existing databases
+            cur = conn.execute("PRAGMA table_info(command_ledger)")
+            cmd_cols = [r["name"] for r in cur.fetchall()]
+            if "payload_digest" not in cmd_cols:
+                conn.execute("ALTER TABLE command_ledger ADD COLUMN payload_digest TEXT")
+
+            cur = conn.execute("PRAGMA table_info(code_sets)")
+            cs_cols = [r["name"] for r in cur.fetchall()]
+            if "is_quarantined" not in cs_cols:
+                conn.execute("ALTER TABLE code_sets ADD COLUMN is_quarantined INTEGER NOT NULL DEFAULT 0")
+
+            cur = conn.execute("PRAGMA table_info(code_revisions)")
+            cr_cols = [r["name"] for r in cur.fetchall()]
+            if "is_mock_seed" not in cr_cols:
+                conn.execute("ALTER TABLE code_revisions ADD COLUMN is_mock_seed INTEGER NOT NULL DEFAULT 0")
+
+    def quarantine_mock_seeds(self, backup: bool = True) -> Dict[str, int]:
+        """R04 / V2-08: Quarantine mock seeds with database backup before real hardware dispatch."""
+        if backup and self.db_path.exists():
+            import shutil
+            bak_path = self.db_path.with_suffix(f".bak_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            try:
+                shutil.copy2(self.db_path, bak_path)
+            except Exception:
+                pass
+
+        with self._get_connection() as conn:
+            cur1 = conn.execute(
+                """
+                UPDATE code_sets
+                SET is_quarantined = 1
+                WHERE id LIKE '%_seed'
+                   OR source_name LIKE '%MOCK%'
+                   OR license LIKE '%Mock%'
+                   OR source_url LIKE '%seed_data.py%'
+                """
+            )
+            quarantined_cs = cur1.rowcount
+
+            cur2 = conn.execute(
+                """
+                UPDATE code_revisions
+                SET is_mock_seed = 1
+                WHERE code_set_id IN (
+                    SELECT id FROM code_sets WHERE is_quarantined = 1
+                ) OR source_type = 'mock_seed'
+                """
+            )
+            quarantined_rev = cur2.rowcount
+            return {"code_sets": quarantined_cs, "code_revisions": quarantined_rev}
 
     def recover_interrupted_commands(self):
         """Mark any command left in 'dispatching' or 'prepared' as 'unknown' after restart."""
@@ -250,10 +302,12 @@ class DeviceStorage:
                 return None
             return self._row_to_code_set(row)
 
-    def list_code_sets(self, category: Optional[str] = None, brand: Optional[str] = None) -> List[CodeSet]:
+    def list_code_sets(self, category: Optional[str] = None, brand: Optional[str] = None, include_quarantined: bool = False) -> List[CodeSet]:
         with self._get_connection() as conn:
             query = "SELECT * FROM code_sets WHERE 1=1"
             params = []
+            if not include_quarantined:
+                query += " AND is_quarantined = 0"
             if category:
                 query += " AND category = ?"
                 params.append(category)
@@ -264,12 +318,17 @@ class DeviceStorage:
             rows = conn.execute(query, params).fetchall()
             return [self._row_to_code_set(r) for r in rows]
 
-    def list_brands(self, category: Optional[str] = None) -> List[str]:
+    def list_brands(self, category: Optional[str] = None, include_quarantined: bool = False) -> List[str]:
         with self._get_connection() as conn:
+            query = "SELECT DISTINCT brand FROM code_sets WHERE 1=1"
+            params = []
+            if not include_quarantined:
+                query += " AND is_quarantined = 0"
             if category:
-                rows = conn.execute("SELECT DISTINCT brand FROM code_sets WHERE category = ? ORDER BY brand ASC", (category,)).fetchall()
-            else:
-                rows = conn.execute("SELECT DISTINCT brand FROM code_sets ORDER BY brand ASC").fetchall()
+                query += " AND category = ?"
+                params.append(category)
+            query += " ORDER BY brand ASC"
+            rows = conn.execute(query, params).fetchall()
             return [r["brand"] for r in rows]
 
     def _row_to_code_set(self, row: sqlite3.Row) -> CodeSet:
@@ -378,9 +437,9 @@ class DeviceStorage:
             return [self._row_to_code_revision(r) for r in rows]
 
     def get_active_code_revision(self, appliance_id: str, button_key: str) -> Optional[CodeRevision]:
-        """Get the active code revision for a button. Prioritizes verified revisions (R13)."""
+        """Get the active code revision for a button. Only returns verified revisions (R13 / V2-09)."""
         with self._get_connection() as conn:
-            # 1. First look for verified revisions (active binding)
+            # Look for verified revisions (active binding)
             row = conn.execute(
                 """
                 SELECT * FROM code_revisions
@@ -392,18 +451,7 @@ class DeviceStorage:
             if row:
                 return self._row_to_code_revision(row)
 
-            # 2. If no verified revision exists yet, fallback to latest initial revision
-            row_unverified = conn.execute(
-                """
-                SELECT * FROM code_revisions
-                WHERE appliance_id = ? AND button_key = ?
-                ORDER BY revision_number DESC, created_at DESC LIMIT 1
-                """,
-                (appliance_id, button_key),
-            ).fetchone()
-            if row_unverified:
-                return self._row_to_code_revision(row_unverified)
-
+            # V2-09: Never fallback to unverified revision for active normal operational dispatch!
             return None
 
     def verify_code_revision(self, rev_id: str, is_verified: bool = True):
@@ -468,7 +516,24 @@ class DeviceStorage:
                 return None
             return self._row_to_ledger_entry(row)
 
-    def prepare_command(self, request_id: str, gateway_id: str, appliance_id: str, button_key: str, code_revision_id: str) -> CommandLedgerEntry:
+    def prepare_command(
+        self,
+        request_id: str,
+        gateway_id: str,
+        appliance_id: str,
+        button_key: str,
+        code_revision_id: str,
+        payload_digest: Optional[str] = None,
+    ) -> CommandLedgerEntry:
+        existing = self.get_ledger_entry(request_id)
+        if existing:
+            if existing.payload_digest and payload_digest and existing.payload_digest != payload_digest:
+                raise ValueError(
+                    f"request_id '{request_id}' conflict: existing digest '{existing.payload_digest}' "
+                    f"does not match new digest '{payload_digest}'"
+                )
+            return existing
+
         now = datetime.now().astimezone().isoformat()
         entry_id = f"cmd_{uuid.uuid4().hex[:12]}"
         entry = CommandLedgerEntry(
@@ -480,15 +545,27 @@ class DeviceStorage:
             code_revision_id=code_revision_id,
             state=CommandState.PREPARED,
             sent_at=now,
+            payload_digest=payload_digest,
         )
         with self._get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO command_ledger (id, request_id, gateway_id, appliance_id, button_key, code_revision_id, state, sent_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (entry.id, entry.request_id, entry.gateway_id, entry.appliance_id, entry.button_key, entry.code_revision_id, entry.state.value, entry.sent_at),
-            )
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO command_ledger (id, request_id, gateway_id, appliance_id, button_key, code_revision_id, state, sent_at, payload_digest)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (entry.id, entry.request_id, entry.gateway_id, entry.appliance_id, entry.button_key, entry.code_revision_id, entry.state.value, entry.sent_at, entry.payload_digest),
+                )
+            except sqlite3.IntegrityError:
+                race_entry = self.get_ledger_entry(request_id)
+                if race_entry and race_entry.payload_digest and payload_digest and race_entry.payload_digest != payload_digest:
+                    raise ValueError(
+                        f"request_id '{request_id}' conflict: race digest '{race_entry.payload_digest}' "
+                        f"does not match new digest '{payload_digest}'"
+                    )
+                if race_entry:
+                    return race_entry
+                raise
         return entry
 
     def update_command_state(self, request_id: str, state: CommandState, error_message: Optional[str] = None, raw_ack: Optional[str] = None):
@@ -504,6 +581,7 @@ class DeviceStorage:
             )
 
     def _row_to_ledger_entry(self, row: sqlite3.Row) -> CommandLedgerEntry:
+        keys = row.keys()
         return CommandLedgerEntry(
             id=row["id"],
             request_id=row["request_id"],
@@ -516,4 +594,5 @@ class DeviceStorage:
             completed_at=row["completed_at"],
             error_message=row["error_message"],
             raw_ack=row["raw_ack"],
+            payload_digest=row["payload_digest"] if "payload_digest" in keys else None,
         )

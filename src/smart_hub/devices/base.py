@@ -160,6 +160,7 @@ class CommandLedgerEntry:
     completed_at: Optional[str] = None
     error_message: Optional[str] = None
     raw_ack: Optional[str] = None
+    payload_digest: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -167,8 +168,35 @@ class CommandLedgerEntry:
         return data
 
 
+class ProviderCapability(str, Enum):
+    IR_SEND = "ir_send"
+    IR_LEARN = "ir_learn"
+    RF_SEND = "rf_send"
+    DIRECT_COMMAND = "direct_command"
+    STATE_QUERY = "state_query"
+
+
 class BaseDeviceProvider(ABC):
-    """Abstract provider interface for IoT gateways (Broadlink, and Tuya in future)."""
+    """Abstract provider interface for IoT gateways (Broadlink, Tuya, etc.)."""
+
+    @property
+    def capabilities(self) -> List[ProviderCapability]:
+        """List of capabilities supported by this provider."""
+        return [ProviderCapability.IR_SEND, ProviderCapability.IR_LEARN]
+
+    def has_capability(self, cap: ProviderCapability) -> bool:
+        return cap in self.capabilities
+
+    def execute_action(self, gateway: GatewayInfo, action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Neutral action execution contract for IoT devices (IR, direct command, state query)."""
+        if action_type == "send_ir":
+            code = params.get("code_bytes", b"")
+            delivered = self.send_code(gateway, code)
+            return {"delivered": delivered}
+        elif action_type == "learn_ir":
+            code = self.enter_learning(gateway, timeout=params.get("timeout", 30.0))
+            return {"code": code}
+        raise NotImplementedError(f"Action '{action_type}' is not supported by {self.__class__.__name__}.")
 
     @abstractmethod
     def discover(self, timeout: float = 5.0) -> List[GatewayInfo]:
@@ -180,15 +208,13 @@ class BaseDeviceProvider(ABC):
         """Verify device reachability and auth without sending IR."""
         pass
 
-    @abstractmethod
     def enter_learning(self, gateway: GatewayInfo, timeout: float = 30.0, cancel_token: Optional[Any] = None) -> bytes:
         """Put gateway into IR learning mode and poll until code received or timeout."""
-        pass
+        raise NotImplementedError(f"{self.__class__.__name__} does not support IR learning.")
 
-    @abstractmethod
     def send_code(self, gateway: GatewayInfo, code_bytes: bytes) -> bool:
         """Send raw IR code bytes to appliance via gateway. Returns True on ACK."""
-        pass
+        raise NotImplementedError(f"{self.__class__.__name__} does not support IR sending.")
 
     @abstractmethod
     def close(self):

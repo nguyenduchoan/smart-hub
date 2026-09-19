@@ -121,14 +121,17 @@ class DeviceStorageTests(unittest.TestCase):
         )
         self.storage.save_code_revision(rev)
 
+        # V2-09: Unverified revision is not active for remote dispatch
         active = self.storage.get_active_code_revision("app_1", "power_toggle")
-        self.assertIsNotNone(active)
-        self.assertFalse(active.is_verified)
+        self.assertIsNone(active)
 
         # Verify revision
         self.storage.verify_code_revision("rev_1", True)
         updated = self.storage.get_code_revision("rev_1")
         self.assertTrue(updated.is_verified)
+        active = self.storage.get_active_code_revision("app_1", "power_toggle")
+        self.assertIsNotNone(active)
+        self.assertTrue(active.is_verified)
 
     def test_r13_active_code_revision_does_not_get_overridden_by_unverified_revision(self):
         gw = GatewayInfo(id="gw_r13", provider="broadlink", model_name="RM4", ip_address="192.168.1.5", mac="11:22:33:44:55:66", devtype=0x6508)
@@ -240,6 +243,77 @@ class DeviceStorageTests(unittest.TestCase):
         recovered = new_instance.get_ledger_entry(req_id)
         self.assertEqual(recovered.state, CommandState.UNKNOWN)
         self.assertIn("restart", recovered.error_message.lower())
+
+    def test_v2_07_ledger_payload_digest_conflict(self):
+        req_id = "req_conflict_test"
+        self.storage.prepare_command(
+            request_id=req_id,
+            gateway_id="gw_1",
+            appliance_id="app_1",
+            button_key="power",
+            code_revision_id="rev_1",
+            payload_digest="digest_aaa",
+        )
+        # Same request_id with different digest raises ValueError (conflict)
+        with self.assertRaises(ValueError) as ctx:
+            self.storage.prepare_command(
+                request_id=req_id,
+                gateway_id="gw_1",
+                appliance_id="app_1",
+                button_key="power",
+                code_revision_id="rev_1",
+                payload_digest="digest_bbb",
+            )
+        self.assertIn("conflict", str(ctx.exception).lower())
+
+    def test_v2_08_quarantine_mock_seeds(self):
+        cs = CodeSet(
+            id="test_mock_seed",
+            category=ApplianceCategory.FAN,
+            brand="MockBrand",
+            models=["MockModel"],
+            source_name="MOCK Built-in Catalog",
+            source_url="internal://seed_data.py",
+            source_revision="1.0",
+            license="Mock License",
+            encoding="broadlink_base64",
+            hash="dummy_hash",
+            codes={"power": base64.b64encode(b"\x26\x00\x08\x00\x01\x02\x03\x04").decode("ascii")},
+        )
+        self.storage.save_code_set(cs)
+
+        gw = GatewayInfo(id="gw_q", provider="mock", model_name="RM4", ip_address="192.168.1.10", mac="11:22:33:44:55:77", devtype=0x6508)
+        self.storage.save_gateway(gw)
+        app = Appliance(id="app_q", name="Fan Q", room="Lab", category=ApplianceCategory.FAN, brand="MockBrand", model="M1", gateway_id="gw_q")
+        self.storage.save_appliance(app)
+
+        rev = CodeRevision(
+            id="rev_mock_seed_1",
+            code_set_id="test_mock_seed",
+            appliance_id="app_q",
+            button_key="power",
+            button_name="Power",
+            payload_base64=cs.codes["power"],
+            payload_hash="hash_mock",
+            source_type="mock_seed",
+            revision_number=1,
+            is_verified=False,
+        )
+        self.storage.save_code_revision(rev)
+
+        # Run quarantine
+        result = self.storage.quarantine_mock_seeds(backup=True)
+        self.assertGreater(result["code_sets"], 0)
+        self.assertGreater(result["code_revisions"], 0)
+
+        # Verify excluded when include_quarantined=False
+        active_sets = self.storage.list_code_sets(include_quarantined=False)
+        self.assertNotIn("test_mock_seed", [s.id for s in active_sets])
+
+        # Verify backup files were created in directory
+        bak_files = list(self.storage.db_path.parent.glob("*.bak_*"))
+        self.assertGreater(len(bak_files), 0)
+
 
 
 class CatalogImporterTests(unittest.TestCase):

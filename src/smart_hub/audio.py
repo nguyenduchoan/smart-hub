@@ -92,23 +92,36 @@ class AlsaCapture:
         del self.buffer[:FRAME_BYTES]
         return frame
 
-    def drain(self):
+    def drain(self, timeout: float = 0.2):
         """Discard any accumulated frames in internal buffer and OS pipe."""
         self.buffer.clear()
-        if not self.selector or not self.process or not self.process.stdout:
+        if not self.selector or not self.process:
             return
-        while True:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                break
             events = self.selector.select(0.0)
             if not events:
                 break
+            had_data = False
             for key, _ in events:
-                if key.fileobj is self.process.stdout:
+                try:
+                    block = os.read(key.fd, 4096)
+                except (BlockingIOError, OSError):
+                    continue
+                if not block:
                     try:
-                        chunk = self.process.stdout.read1(4096)
-                        if not chunk:
-                            break
+                        self.selector.unregister(key.fileobj)
                     except Exception:
-                        break
+                        pass
+                    continue
+                had_data = True
+                if key.data == "error":
+                    self.error_tail.extend(block)
+                    self.error_tail[:] = self.error_tail[-4096:]
+            if not had_data:
+                break
 
     def __exit__(self, *_):
         if self.process:

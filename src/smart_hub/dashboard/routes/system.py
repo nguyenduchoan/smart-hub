@@ -1,11 +1,11 @@
-"""System health, status, and CSRF token endpoints."""
+import time
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from ...child_study import load_labels
 from ...devices import DeviceStorage
 from ...locks import ResourceLock
-from ..security import CSRF_TOKEN, SESSION_TOKEN
+from ..security import CSRF_TOKEN, SESSION_TOKEN, issue_csrf_token
 
 router = APIRouter(prefix="/api", tags=["System"])
 
@@ -23,7 +23,9 @@ def get_health():
 
 @router.get("/csrf-token")
 def get_csrf_token():
-    return {"csrf_token": CSRF_TOKEN}
+    ttl = 86400
+    token = issue_csrf_token(ttl_seconds=ttl)
+    return {"csrf_token": token, "expires_at": time.time() + ttl}
 
 
 @router.get("/status")

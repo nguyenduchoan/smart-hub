@@ -1,7 +1,7 @@
 """Audio recording session control endpoints for child and adult voice study."""
 from typing import Optional
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ...child_study import NEGATIVE_PRESETS
 from ...recording import RecordingService, SessionConfig
@@ -19,12 +19,59 @@ class StartRecordingRequest(BaseModel):
     phrase: Optional[str] = Field(default=None, description="Câu cần nói")
     preset: Optional[int] = Field(default=None, description="Mã preset câu âm tính (1-10)")
     label: Optional[str] = Field(default=None, description="'positive' hoặc 'negative'")
-    distance_m: float = Field(default=1.0, description="Khoảng cách tới mic (mét)")
+    distance_m: float = Field(default=1.0, gt=0.0, le=50.0, description="Khoảng cách tới mic (mét, > 0 và <= 50)")
     condition: str = Field(default="quiet_normal_voice", description="Điều kiện âm thanh")
-    takes_planned: int = Field(default=5, description="Số lượt thu")
+    takes_planned: int = Field(default=5, gt=0, le=100, description="Số lượt thu (> 0 và <= 100)")
     manual_advance: bool = Field(default=True, description="Chờ người dùng bấm trước từng lượt")
     session_id: Optional[str] = Field(default=None, description="Mã phiên tùy chọn")
     mock: bool = Field(default=False, description="Chạy giả lập không mở microphone")
+
+    @field_validator("speaker")
+    @classmethod
+    def validate_speaker(cls, v: str) -> str:
+        v_clean = v.strip().lower()
+        if v_clean not in ("adult", "child"):
+            raise ValueError(f"speaker phải là 'adult' hoặc 'child', nhận '{v}'")
+        return v_clean
+
+    @field_validator("speaker_id")
+    @classmethod
+    def validate_speaker_id(cls, v: str) -> str:
+        v_clean = v.strip()
+        if not v_clean:
+            raise ValueError("speaker_id không được để trống")
+        return v_clean
+
+    @field_validator("split")
+    @classmethod
+    def validate_split(cls, v: str) -> str:
+        v_clean = v.strip().lower()
+        if v_clean not in ("pilot", "dev", "test"):
+            raise ValueError(f"split phải là 'pilot', 'dev', hoặc 'test', nhận '{v}'")
+        return v_clean
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v_clean = v.strip().lower()
+        if v_clean not in ("positive", "negative"):
+            raise ValueError(f"label phải là 'positive' hoặc 'negative', nhận '{v}'")
+        return v_clean
+
+    @field_validator("condition")
+    @classmethod
+    def validate_condition(cls, v: str) -> str:
+        v_clean = v.strip()
+        if not v_clean:
+            raise ValueError("condition không được để trống")
+        return v_clean
+
+
+class AdvanceTakeRequest(BaseModel):
+    session_id: Optional[str] = Field(default=None, description="Mã phiên thu cần advance")
+    take_sequence: Optional[int] = Field(default=None, description="Số thứ tự lượt thu dự kiến bắt đầu")
 
 
 @router.get("/status")
@@ -75,9 +122,11 @@ def start_recording(req: StartRecordingRequest):
 
 
 @router.post("/advance")
-def advance_take():
+def advance_take(req: Optional[AdvanceTakeRequest] = None):
     try:
-        RECORDING_SERVICE.advance()
+        sess_id = req.session_id if req else None
+        seq = req.take_sequence if req else None
+        RECORDING_SERVICE.advance(session_id=sess_id, take_sequence=seq)
         return {"status": "ok", "message": "Đã bắt đầu lượt thu tiếp theo."}
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))

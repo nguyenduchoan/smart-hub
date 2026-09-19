@@ -3,6 +3,7 @@ let CSRF_TOKEN = '';
 let activeApplianceId = null;
 let currentReviewSample = null;
 let recordingPollInterval = null;
+let currentRecordingStatus = null;
 
 // Utility: UUID generator for idempotent request IDs
 function generateUUID() {
@@ -479,13 +480,16 @@ function renderRemoteButtons(app) {
 
   app.buttons.forEach(btn => {
     const b = document.createElement('button');
-    b.className = `remote-btn ${btn.button_key.includes('power') ? 'btn-power' : ''} ${btn.is_verified ? 'btn-verified' : ''}`;
+    const isPower = btn.button_key.includes('power');
+    b.className = `remote-btn ${isPower ? 'btn-power' : ''} ${btn.is_verified ? 'btn-verified' : 'btn-pending'}`;
     b.innerHTML = `
       <span>${escapeHtml(btn.button_name || btn.button_key)}</span>
-      ${btn.is_verified ? '<span class="btn-badge-verified">✓ Đã xác minh</span>' : '<span class="text-muted" style="font-size:10px;">Chưa kiểm chứng</span>'}
+      ${btn.is_verified
+        ? '<span class="btn-badge-verified">✓ Đã xác minh</span>'
+        : '<span class="btn-badge-pending" style="font-size:10px; color:#ff9800; font-weight:600;">⚠️ Chưa xác nhận (Bấm Test)</span>'}
     `;
     b.addEventListener('click', () => {
-      sendIRButton(app.id, btn, b);
+      sendIRButton(app.id, btn, b, !btn.is_verified);
     });
     grid.appendChild(b);
   });
@@ -493,7 +497,7 @@ function renderRemoteButtons(app) {
 
 let lastSentContext = null;
 
-async function sendIRButton(appId, btn, btnEl) {
+async function sendIRButton(appId, btn, btnEl, isTest = false) {
   if (btnEl && btnEl.disabled) return;
   if (btnEl) {
     btnEl.disabled = true;
@@ -504,7 +508,9 @@ async function sendIRButton(appId, btn, btnEl) {
   const obsBox = document.getElementById('observation-box');
   const obsText = document.getElementById('obs-result-text');
   obsBox.style.display = 'block';
-  obsText.textContent = `Đang gửi lệnh '${btn.button_name || btn.button_key}' tới RM4 mini...`;
+  obsText.textContent = isTest
+    ? `Đang thử nghiệm mã '${btn.button_name || btn.button_key}' (Test Mode)...`
+    : `Đang gửi lệnh '${btn.button_name || btn.button_key}' tới RM4 mini...`;
 
   try {
     const res = await apiFetch(`/api/devices/${appId}/actions`, {
@@ -513,6 +519,7 @@ async function sendIRButton(appId, btn, btnEl) {
         request_id: reqId,
         button_key: btn.button_key,
         code_revision_id: btn.id,
+        is_test: isTest,
       },
     });
     obsText.textContent = res.message;
@@ -860,6 +867,7 @@ function startRecordingPolling() {
 async function pollRecordingStatus() {
   try {
     const st = await apiFetch('/api/recording/status');
+    currentRecordingStatus = st;
     const badge = document.getElementById('rec-state-badge');
     const prompt = document.getElementById('studio-prompt');
     const progress = document.getElementById('studio-progress');
@@ -923,7 +931,12 @@ function renderStudioClips(clips) {
 
 document.getElementById('btn-advance-take')?.addEventListener('click', async () => {
   try {
-    await apiFetch('/api/recording/advance', { method: 'POST' });
+    const payload = {};
+    if (currentRecordingStatus) {
+      if (currentRecordingStatus.session_id) payload.session_id = currentRecordingStatus.session_id;
+      if (typeof currentRecordingStatus.current_take === 'number') payload.take_sequence = currentRecordingStatus.current_take;
+    }
+    await apiFetch('/api/recording/advance', { method: 'POST', body: payload });
   } catch (err) {
     showToast(`Lỗi: ${err.message}`, 'error');
   }

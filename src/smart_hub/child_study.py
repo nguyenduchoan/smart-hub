@@ -17,11 +17,13 @@ from .audio import (
     is_segment_clipped,
 )
 from .config import ROOT, load_config
+from .locks import dataset_lock
 from .stt_keyword import KeywordTrigger
 
 CHILD_STUDY_DIR = ROOT / "recordings" / "child-study"
 SESSIONS_FILE = CHILD_STUDY_DIR / "sessions.json"
 LABELS_FILE = CHILD_STUDY_DIR / "labels.jsonl"
+AUDIT_FILE = CHILD_STUDY_DIR / "audit.jsonl"
 RESULTS_DIR = CHILD_STUDY_DIR / "results"
 DERIVED_DIR = CHILD_STUDY_DIR / "derived"
 DECISIONS_FILE = CHILD_STUDY_DIR / "decisions.md"
@@ -164,6 +166,9 @@ def create_label_entry(
     review_status="captured_pending_review",
     review_note="",
     speaker_label=None,
+    is_mock=False,
+    provenance=None,
+    revision=1,
 ):
     if expected_events is None:
         expected_events = 1 if label == "positive" else 0
@@ -193,7 +198,12 @@ def create_label_entry(
         "condition": condition,
         "review_status": review_status,
         "review_note": review_note,
+        "is_mock": bool(is_mock),
+        "provenance": provenance or ("mock_synthetic" if is_mock else "recorded"),
+        "revision": int(revision),
     }
+    etag_seed = f"{entry['sample_id']}:{entry['revision']}:{entry.get('review_status')}:{entry.get('label')}:{entry.get('transcript_human', '')}"
+    entry["etag"] = hashlib.sha256(etag_seed.encode("utf-8")).hexdigest()[:16]
     validate_label_entry(entry)
     return entry
 
@@ -273,49 +283,88 @@ def load_labels(labels_file=None, root=None):
     return labels
 
 
-def save_label(entry, labels_file=None):
-    """Save a single label entry atomically; detect identity conflicts."""
+def save_label(entry, labels_file=None, acquire_lock=True):
+    """Save a single label entry atomically with revision tracking, audit logging, and dataset_lock."""
     validate_label_entry(entry)
     path = Path(labels_file) if labels_file else LABELS_FILE
+    audit_path = path.parent / "audit.jsonl"
     ensure_child_study_dirs(path.parent)
-    labels = load_labels(path)  # fail-fast on corruption
 
-    sample_id = entry.get("sample_id")
-    source = entry.get("source")
+    def _execute_save():
+        labels = load_labels(path)  # fail-fast on corruption
 
-    matched_idx = None
-    for idx, item in enumerate(labels):
-        item_sid = item.get("sample_id")
-        item_src = item.get("source")
+        sample_id = entry.get("sample_id")
+        source = entry.get("source")
 
-        if item_sid == sample_id and item_src != source:
-            raise ChildStudyDataError(
-                f"Identity collision: sample_id '{sample_id}' exists with different source: "
-                f"'{item_src}' vs '{source}'"
-            )
-        if item_src == source and item_sid != sample_id:
-            raise ChildStudyDataError(
-                f"Identity collision: source '{source}' exists with different sample_id: "
-                f"'{item_sid}' vs '{sample_id}'"
-            )
-        if item_sid == sample_id and item_src == source:
-            matched_idx = idx
-            break
+        matched_idx = None
+        old_entry = None
+        for idx, item in enumerate(labels):
+            item_sid = item.get("sample_id")
+            item_src = item.get("source")
 
-    if matched_idx is not None:
-        labels[matched_idx] = entry
+            if item_sid == sample_id and item_src != source:
+                raise ChildStudyDataError(
+                    f"Identity collision: sample_id '{sample_id}' exists with different source: "
+                    f"'{item_src}' vs '{source}'"
+                )
+            if item_src == source and item_sid != sample_id:
+                raise ChildStudyDataError(
+                    f"Identity collision: source '{source}' exists with different sample_id: "
+                    f"'{item_sid}' vs '{sample_id}'"
+                )
+            if item_sid == sample_id and item_src == source:
+                matched_idx = idx
+                old_entry = dict(item)
+                break
+
+        # Revision handling
+        if matched_idx is not None:
+            old_rev = old_entry.get("revision", 1)
+            entry["revision"] = old_rev + 1
+        else:
+            if "revision" not in entry:
+                entry["revision"] = 1
+
+        # ETag calculation
+        etag_seed = f"{sample_id}:{entry['revision']}:{entry.get('review_status')}:{entry.get('label')}:{entry.get('transcript_human', '')}"
+        entry["etag"] = hashlib.sha256(etag_seed.encode("utf-8")).hexdigest()[:16]
+
+        if matched_idx is not None:
+            labels[matched_idx] = entry
+        else:
+            labels.append(entry)
+
+        old_umask = os.umask(0o077)
+        try:
+            tmp = path.with_suffix(".tmp")
+            with tmp.open("w", encoding="utf-8") as f:
+                for item in labels:
+                    f.write(json.dumps(item, ensure_ascii=False) + "\n")
+            tmp.replace(path)
+
+            # Audit append-only log
+            audit_entry = {
+                "timestamp": datetime.now().astimezone().isoformat(),
+                "sample_id": sample_id,
+                "action": "update" if matched_idx is not None else "create",
+                "old_revision": old_entry.get("revision") if old_entry else None,
+                "new_revision": entry["revision"],
+                "reviewer": entry.get("reviewer"),
+                "review_status": entry.get("review_status"),
+                "review_note": entry.get("review_note", ""),
+                "old_entry": old_entry,
+                "new_entry": dict(entry),
+            }
+            with audit_path.open("a", encoding="utf-8") as af:
+                af.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
+        finally:
+            os.umask(old_umask)
+
+    if acquire_lock:
+        with dataset_lock(timeout=5.0):
+            _execute_save()
     else:
-        labels.append(entry)
-
-    old_umask = os.umask(0o077)
-    try:
-        tmp = path.with_suffix(".tmp")
-        with tmp.open("w", encoding="utf-8") as f:
-            for item in labels:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
-        tmp.replace(path)
-    finally:
-        os.umask(old_umask)
+        _execute_save()
 
 
 def save_session_and_labels(
@@ -325,7 +374,7 @@ def save_session_and_labels(
     labels_file=None,
     allow_session_update=True,
 ):
-    """Batch-save session and labels with atomic pre-validation and collision checks."""
+    """Batch-save session and labels with atomic pre-validation, collision checks, and dataset_lock."""
     session_id = session_info.get("session_id")
     if not session_id:
         raise ChildStudyDataError("session_info must have a 'session_id'")
@@ -354,66 +403,73 @@ def save_session_and_labels(
     lbl_path = Path(labels_file) if labels_file else LABELS_FILE
     ensure_child_study_dirs(sess_path.parent)
 
-    sessions = load_sessions(sess_path)
-    if not allow_session_update:
-        for s in sessions:
-            if s.get("session_id") == session_id:
-                raise ChildStudyDataError(
-                    f"Session ID collision: session '{session_id}' already exists"
-                )
+    with dataset_lock(timeout=5.0):
+        sessions = load_sessions(sess_path)
+        if not allow_session_update:
+            for s in sessions:
+                if s.get("session_id") == session_id:
+                    raise ChildStudyDataError(
+                        f"Session ID collision: session '{session_id}' already exists"
+                    )
 
-    existing_labels = load_labels(lbl_path)
-    # Check conflicts against existing labels
-    for entry in label_entries:
-        sid = entry["sample_id"]
-        src = entry["source"]
-        for item in existing_labels:
-            item_sid = item.get("sample_id")
-            item_src = item.get("source")
-            if item_sid == sid and item_src != src:
-                raise ChildStudyDataError(
-                    f"Identity collision: sample_id '{sid}' exists with different source: "
-                    f"'{item_src}' vs '{src}'"
-                )
-            if item_src == src and item_sid != sid:
-                raise ChildStudyDataError(
-                    f"Identity collision: source '{src}' exists with different sample_id: "
-                    f"'{item_sid}' vs '{sid}'"
-                )
-
-    # Now perform updates
-    sess_updated = False
-    for idx, s in enumerate(sessions):
-        if s.get("session_id") == session_id:
-            sessions[idx] = session_info
-            sess_updated = True
-            break
-    if not sess_updated:
-        sessions.append(session_info)
-
-    label_map = {(item["sample_id"], item["source"]): idx for idx, item in enumerate(existing_labels)}
-    for entry in label_entries:
-        key = (entry["sample_id"], entry["source"])
-        if key in label_map:
-            existing_labels[label_map[key]] = entry
-        else:
-            label_map[key] = len(existing_labels)
-            existing_labels.append(entry)
-
-    old_umask = os.umask(0o077)
-    try:
-        tmp_sess = sess_path.with_suffix(".tmp")
-        tmp_sess.write_text(json.dumps(sessions, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-        tmp_lbl = lbl_path.with_suffix(".tmp")
-        with tmp_lbl.open("w", encoding="utf-8") as f:
+        existing_labels = load_labels(lbl_path)
+        # Check conflicts against existing labels
+        for entry in label_entries:
+            sid = entry["sample_id"]
+            src = entry["source"]
             for item in existing_labels:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+                item_sid = item.get("sample_id")
+                item_src = item.get("source")
+                if item_sid == sid and item_src != src:
+                    raise ChildStudyDataError(
+                        f"Identity collision: sample_id '{sid}' exists with different source: "
+                        f"'{item_src}' vs '{src}'"
+                    )
+                if item_src == src and item_sid != sid:
+                    raise ChildStudyDataError(
+                        f"Identity collision: source '{src}' exists with different sample_id: "
+                        f"'{item_sid}' vs '{sid}'"
+                    )
 
-        tmp_sess.replace(sess_path)
-        tmp_lbl.replace(lbl_path)
-    finally:
-        os.umask(old_umask)
+        # Now perform updates
+        sess_updated = False
+        for idx, s in enumerate(sessions):
+            if s.get("session_id") == session_id:
+                sessions[idx] = session_info
+                sess_updated = True
+                break
+        if not sess_updated:
+            sessions.append(session_info)
+
+        label_map = {(item["sample_id"], item["source"]): idx for idx, item in enumerate(existing_labels)}
+        for entry in label_entries:
+            if "revision" not in entry:
+                entry["revision"] = 1
+            if "etag" not in entry:
+                etag_seed = f"{entry['sample_id']}:{entry['revision']}:{entry.get('review_status')}:{entry.get('label')}:{entry.get('transcript_human', '')}"
+                entry["etag"] = hashlib.sha256(etag_seed.encode("utf-8")).hexdigest()[:16]
+
+            key = (entry["sample_id"], entry["source"])
+            if key in label_map:
+                existing_labels[label_map[key]] = entry
+            else:
+                label_map[key] = len(existing_labels)
+                existing_labels.append(entry)
+
+        old_umask = os.umask(0o077)
+        try:
+            tmp_sess = sess_path.with_suffix(".tmp")
+            tmp_sess.write_text(json.dumps(sessions, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            tmp_lbl = lbl_path.with_suffix(".tmp")
+            with tmp_lbl.open("w", encoding="utf-8") as f:
+                for item in existing_labels:
+                    f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+            tmp_sess.replace(sess_path)
+            tmp_lbl.replace(lbl_path)
+        finally:
+            os.umask(old_umask)
 
 
 def is_sample_eligible_for_official_benchmark(item, root=ROOT):
@@ -422,6 +478,8 @@ def is_sample_eligible_for_official_benchmark(item, root=ROOT):
     in evaluate_sample() so failures count as ERROR in the benchmark denominator.
     Returns (is_eligible, reason).
     """
+    if item.get("is_mock") is True or item.get("provenance") in ("mock", "mock_synthetic"):
+        return False, "mock synthetic samples are excluded from official benchmark"
     if item.get("review_status") != "accepted":
         return False, f"review_status is '{item.get('review_status')}', not 'accepted'"
     if item.get("speaker_confirmed") is not True:

@@ -4,6 +4,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from smart_hub.recording import (
@@ -167,6 +168,101 @@ class RecordingServiceTests(unittest.TestCase):
         self.assertIn("play_cue", events)
         self.assertIn("drain_capture", events)
         self.assertLess(events.index("enter_capture"), events.index("play_cue"))
+
+    def test_v2_01_alsa_capture_drain_with_raw_unbuffered_pipe(self):
+        import os
+        import selectors
+        from smart_hub.audio import AlsaCapture
+
+        # Create raw OS pipe
+        r_fd, w_fd = os.pipe()
+        try:
+            # FileIO object without .read1() method (same as Popen bufsize=0)
+            r_file = os.fdopen(r_fd, "rb", buffering=0)
+            self.assertFalse(hasattr(r_file, "read1"), "Raw FileIO must not have read1 method")
+
+            cap = AlsaCapture("default")
+            cap.selector = selectors.DefaultSelector()
+            cap.selector.register(r_file, selectors.EVENT_READ, "pcm")
+
+            class DummyProc:
+                stdout = r_file
+                stderr = None
+                def poll(self):
+                    return None
+
+            cap.process = DummyProc()
+            # Write 2048 bytes of PCM into pipe
+            os.write(w_fd, b"\x00" * 2048)
+
+            # drain() must finish promptly (<0.5s) without hanging or raising AttributeError
+            start = time.monotonic()
+            cap.drain(timeout=0.2)
+            elapsed = time.monotonic() - start
+
+            self.assertLess(elapsed, 0.5)
+            # Verify selector now has 0 unread bytes
+            events = cap.selector.select(0.0)
+            self.assertEqual(len(events), 0)
+        finally:
+            try:
+                cap.selector.close()
+            except Exception:
+                pass
+            r_file.close()
+            os.close(w_fd)
+
+    def test_v2_10_cue_playback_failure_halts_session(self):
+        from smart_hub.audio import AudioError
+        cfg = SessionConfig(
+            speaker="child",
+            speaker_id="child_cue_err",
+            split="pilot",
+            label="positive",
+            phrase="Maika ơi",
+            expected_events=1,
+            distance_m=1.0,
+            condition="quiet",
+            takes_planned=2,
+            manual_advance=False,
+            no_sync=True,
+            mock=False,
+        )
+        with mock.patch("smart_hub.recording.service.AlsaCapture"), \
+             mock.patch.object(self.service, "_play_cue_tone", side_effect=AudioError("aplay failed")):
+            self.service.start_session(cfg)
+            start = time.monotonic()
+            while self.service.state != RecordingState.FAILED and time.monotonic() - start < 3.0:
+                time.sleep(0.02)
+
+        self.assertEqual(self.service.state, RecordingState.FAILED)
+        self.assertIn("aplay failed", self.service.error_message)
+        self.assertEqual(len(self.service.clips), 0)
+
+    def test_v2_11_sync_failure_sets_failed_state(self):
+        cfg = SessionConfig(
+            speaker="child",
+            speaker_id="child_sync_fail",
+            split="pilot",
+            label="positive",
+            phrase="Maika ơi",
+            expected_events=1,
+            distance_m=1.0,
+            condition="quiet",
+            takes_planned=1,
+            manual_advance=False,
+            no_sync=False,
+            mock=True,
+        )
+        with mock.patch.object(self.service, "_sync_child_study", side_effect=OSError("disk full")):
+            self.service.start_session(cfg)
+            start = time.monotonic()
+            while self.service.state != RecordingState.FAILED and time.monotonic() - start < 3.0:
+                time.sleep(0.02)
+
+        self.assertEqual(self.service.state, RecordingState.FAILED)
+        self.assertIn("disk full", self.service.error_message)
+        self.assertEqual(self.service.manifest["status"], "sync_failed")
 
 
 if __name__ == "__main__":

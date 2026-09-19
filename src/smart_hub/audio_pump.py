@@ -74,7 +74,18 @@ class AudioPump:
                 self._notify_locked(force=True)
 
     def _capture(self):
+        res_lock = None
         try:
+            is_real_capture = (self.source_factory is AlsaCapture or getattr(self.source_factory, "__name__", "") == "AlsaCapture")
+            if is_real_capture:
+                from .locks import audio_lock, ResourceBusyError, ResourceLock
+                if ResourceLock("wake_eval").is_locked():
+                    raise AudioError("Tiến trình benchmark đánh giá model đang chạy; không thể capture mic.")
+                try:
+                    res_lock = audio_lock(timeout=0.0)
+                except ResourceBusyError as exc:
+                    raise AudioError(f"Microphone đang bận: {exc}")
+
             self.source = self.source_factory(self.device)
             with self.source as source:
                 try:
@@ -99,6 +110,9 @@ class AudioPump:
         except Exception as exc:
             if self.ready or not self.stop.is_set():
                 self._fail(exc)
+        finally:
+            if res_lock is not None:
+                res_lock.release()
 
     async def __aenter__(self):
         self.loop = asyncio.get_running_loop()

@@ -292,6 +292,7 @@ def main():
                             input(
                                 f"\n[READY {take}/{args.takes}] Bé/Người nói chuẩn bị nói '{phrase}'. Nhấn Enter để bắt đầu tiếng tít..."
                             )
+                            capture.drain()
 
                         print(f"\n[CUE {take}/{args.takes}] Sau tiếng tít, nói ‘{phrase}’ một lần duy nhất.", flush=True)
                         with subprocess.Popen(

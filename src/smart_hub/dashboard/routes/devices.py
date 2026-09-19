@@ -1,7 +1,8 @@
-"""Appliances, IR actions, remote learning, and observations endpoints."""
 import base64
 from datetime import datetime
+import hashlib
 import os
+import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 import uuid
@@ -55,6 +56,7 @@ class SendActionRequest(BaseModel):
     request_id: str = Field(..., description="Định danh idempotency duy nhất cho mỗi lần bấm")
     button_key: str = Field(..., description="Khóa nút, e.g. power_toggle, cool_auto_26c")
     code_revision_id: Optional[str] = Field(default=None, description="ID phiên bản mã; nếu trống dùng active")
+    is_test: bool = Field(default=False, description="Đặt True khi thử nghiệm mã candidate unverified trong phần cài đặt")
 
 
 class StartLearningRequest(BaseModel):
@@ -143,11 +145,18 @@ def get_appliance_detail(device_id: str):
     observations = storage.list_observations(appliance_id=app.id)
     gw = storage.get_gateway(app.gateway_id)
 
-    # Group revisions by button_key, taking the latest revision
+    # V2-09: Group revisions by button_key. Normal remote must strictly bind to active verified revisions.
     buttons_map: Dict[str, Any] = {}
+    # First pass: collect verified revisions
     for r in revisions:
-        if r.button_key not in buttons_map or r.revision_number > buttons_map[r.button_key]["revision_number"]:
-            buttons_map[r.button_key] = r.to_dict()
+        if r.is_verified:
+            if r.button_key not in buttons_map or r.revision_number > buttons_map[r.button_key]["revision_number"]:
+                buttons_map[r.button_key] = r.to_dict()
+    # Second pass: if button has NO verified revision, expose latest candidate with is_verified=False
+    for r in revisions:
+        if r.button_key not in buttons_map:
+            if r.button_key not in buttons_map or r.revision_number > buttons_map[r.button_key]["revision_number"]:
+                buttons_map[r.button_key] = r.to_dict()
 
     data = app.to_dict()
     data["gateway"] = gw.to_dict() if gw else None
@@ -176,47 +185,130 @@ def send_action(device_id: str, req: SendActionRequest):
     if not gw:
         raise HTTPException(status_code=404, detail=f"Gateway '{app.gateway_id}' không tồn tại.")
 
-    # Idempotency check: if request_id already exists in ledger, return existing state
+    # V2-19: Provider preflight check BEFORE creating or dispatching any ledger command
+    try:
+        provider = get_provider()
+        if provider is None:
+            raise RuntimeError(f"Provider '{gw.provider}' không khả dụng.")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Phần cứng hoặc provider '{gw.provider}' không khả dụng: {exc}",
+        )
+
+    # Resolve code revision
+    if req.code_revision_id:
+        rev = storage.get_code_revision(req.code_revision_id)
+        if not rev:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Phiên bản mã '{req.code_revision_id}' không tồn tại.",
+            )
+        # V2-06: Strict binding check against target appliance and button
+        if rev.appliance_id != app.id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Revision '{req.code_revision_id}' thuộc thiết bị khác ('{rev.appliance_id}' vs '{app.id}').",
+            )
+        if rev.button_key != req.button_key:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Revision '{req.code_revision_id}' thuộc nút khác ('{rev.button_key}' vs '{req.button_key}').",
+            )
+        # V2-06: Payload hash integrity check
+        try:
+            raw_payload = base64.b64decode(rev.payload_base64)
+            actual_hash = CodeRevision.compute_hash(raw_payload)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Mã IR bị hỏng: không thể giải mã base64.",
+            )
+        if rev.payload_hash and actual_hash.lower() != rev.payload_hash.lower():
+            raise HTTPException(
+                status_code=400,
+                detail="Mã IR bị hỏng: payload_hash không khớp với nội dung base64.",
+            )
+        # V2-09: Unverified revision requires explicit test flag
+        if not rev.is_verified and not req.is_test:
+            raise HTTPException(
+                status_code=400,
+                detail="Phiên bản mã này chưa được xác nhận (pending). Thao tác remote thông thường chỉ gửi mã đã xác nhận (verified).",
+            )
+    else:
+        # V2-09: Normal remote action without explicit revision must pick active verified revision
+        rev = storage.get_active_code_revision(app.id, req.button_key)
+        if not rev:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Nút '{req.button_key}' chưa có mã IR đã xác nhận (verified). Vui lòng thử nghiệm và xác nhận mã trước khi dùng trên remote.",
+            )
+
+    # V2-08: Quarantine check when running against real hardware
+    if os.environ.get("SMART_HUB_MOCK_HARDWARE") != "1":
+        if getattr(rev, "is_mock_seed", False) or rev.source_type == "mock_seed" or (rev.code_set_id and rev.code_set_id.endswith("_seed")):
+            raise HTTPException(
+                status_code=400,
+                detail="Mã IR thuộc dữ liệu giả lập (mock seed); bị chặn phát tới thiết bị phần cứng thật.",
+            )
+
+    # V2-07: Payload digest covering appliance, gateway, button, revision ID, and payload hash
+    digest_src = f"{app.id}:{gw.id}:{req.button_key}:{rev.id}:{rev.payload_hash}"
+    current_digest = hashlib.sha256(digest_src.encode("utf-8")).hexdigest()
+
+    # Idempotency check: if request_id already exists in ledger
     existing_entry = storage.get_ledger_entry(req.request_id)
     if existing_entry:
+        if existing_entry.payload_digest and existing_entry.payload_digest != current_digest:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Conflict: request_id '{req.request_id}' đã được sử dụng trước đó với payload hoặc thiết bị khác.",
+            )
         return {
             "request_id": existing_entry.request_id,
             "state": existing_entry.state.value,
             "gateway_ack": existing_entry.state == CommandState.DELIVERED,
             "message": "Lệnh đã được gửi trước đó (trả kết quả từ ledger).",
             "sent_at": existing_entry.sent_at,
+            "button_key": existing_entry.button_key,
+            "code_revision_id": existing_entry.code_revision_id,
         }
 
-    # Resolve code revision
-    if req.code_revision_id:
-        rev = storage.get_code_revision(req.code_revision_id)
-    else:
-        rev = storage.get_active_code_revision(app.id, req.button_key)
-
-    if not rev:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Nút '{req.button_key}' chưa có mã IR. Vui lòng chọn catalog hoặc học từ remote gốc.",
-        )
-
-    # Validate payload
+    # Validate payload format
     try:
         code_bytes = validate_broadlink_payload(rev.payload_base64)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Mã IR không hợp lệ: {exc}")
 
-    # Prepare command ledger
-    storage.prepare_command(
-        request_id=req.request_id,
-        gateway_id=gw.id,
-        appliance_id=app.id,
-        button_key=req.button_key,
-        code_revision_id=rev.id,
-    )
+    # Prepare command ledger atomically
+    try:
+        storage.prepare_command(
+            request_id=req.request_id,
+            gateway_id=gw.id,
+            appliance_id=app.id,
+            button_key=req.button_key,
+            code_revision_id=rev.id,
+            payload_digest=current_digest,
+        )
+    except sqlite3.IntegrityError:
+        # Concurrent request with same request_id
+        race_entry = storage.get_ledger_entry(req.request_id)
+        if race_entry and race_entry.payload_digest and race_entry.payload_digest != current_digest:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Conflict: request_id '{req.request_id}' đã được claim đồng thời với payload khác.",
+            )
+        return {
+            "request_id": race_entry.request_id if race_entry else req.request_id,
+            "state": race_entry.state.value if race_entry else CommandState.DISPATCHING.value,
+            "gateway_ack": race_entry.state == CommandState.DELIVERED if race_entry else False,
+            "message": "Lệnh đang được xử lý đồng thời.",
+            "sent_at": race_entry.sent_at if race_entry else "",
+        }
+
     storage.update_command_state(req.request_id, CommandState.DISPATCHING)
 
     # Acquire gateway lock and dispatch IR
-    provider = get_provider()
     try:
         with gateway_lock(gw.id, timeout=2.0):
             provider.send_code(gw, code_bytes)

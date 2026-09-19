@@ -80,6 +80,36 @@ class SessionConfig:
     no_sync: bool = False
     mock: bool = False
 
+    def __post_init__(self):
+        spk = str(self.speaker).strip().lower()
+        if spk not in ("adult", "child"):
+            raise ValueError(f"SessionConfig: speaker phải là 'adult' hoặc 'child', nhận '{self.speaker}'")
+        self.speaker = spk
+        spk_id = str(self.speaker_id).strip()
+        if not spk_id:
+            raise ValueError("SessionConfig: speaker_id không được để trống")
+        self.speaker_id = spk_id
+        splt = str(self.split).strip().lower()
+        if splt not in ("pilot", "dev", "test"):
+            raise ValueError(f"SessionConfig: split phải là 'pilot', 'dev' hoặc 'test', nhận '{self.split}'")
+        self.split = splt
+        lbl = str(self.label).strip().lower()
+        if lbl not in ("positive", "negative"):
+            raise ValueError(f"SessionConfig: label phải là 'positive' hoặc 'negative', nhận '{self.label}'")
+        self.label = lbl
+        if not isinstance(self.takes_planned, int) or self.takes_planned <= 0:
+            raise ValueError(f"SessionConfig: takes_planned phải là số nguyên > 0, nhận {self.takes_planned}")
+        if not math.isfinite(self.distance_m) or self.distance_m <= 0:
+            raise ValueError(f"SessionConfig: distance_m phải là số dương hữu hạn, nhận {self.distance_m}")
+        phr = str(self.phrase).strip()
+        if not phr:
+            raise ValueError("SessionConfig: phrase không được để trống")
+        self.phrase = phr
+        cond = str(self.condition).strip()
+        if not cond:
+            raise ValueError("SessionConfig: condition không được để trống")
+        self.condition = cond
+
 
 class RecordingService:
     """Manages an active recording session with strict state machine and audio lock."""
@@ -92,6 +122,7 @@ class RecordingService:
         self.state: RecordingState = RecordingState.IDLE
         self.session_config: Optional[SessionConfig] = None
         self.session_dir: Optional[Path] = None
+        self.session_id: Optional[str] = None
         self.manifest: Dict[str, Any] = {}
         self.clips: List[TakeClip] = []
         self.current_take: int = 0
@@ -102,6 +133,25 @@ class RecordingService:
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._audio_res_lock = None
+
+        self.recover_interrupted_sessions()
+
+    def recover_interrupted_sessions(self):
+        """Scan recordings directory for any session left in active state upon server restart."""
+        rec_dir = ROOT / "recordings"
+        if not rec_dir.exists():
+            return
+        for sess_path in rec_dir.glob("*/*"):
+            if sess_path.is_dir() and (sess_path / "manifest.json").exists():
+                try:
+                    mf_path = sess_path / "manifest.json"
+                    mf = json.loads(mf_path.read_text(encoding="utf-8"))
+                    if mf.get("status") in ("recording", "waiting_user", "preparing", "cue", "incomplete"):
+                        mf["status"] = "interrupted"
+                        mf["error"] = "Phiên bị gián đoạn do tiến trình máy chủ khởi động lại."
+                        mf_path.write_text(json.dumps(mf, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                except Exception:
+                    pass
 
     def get_status(self) -> Dict[str, Any]:
         with self._lock:
@@ -123,6 +173,11 @@ class RecordingService:
         with self._lock:
             if self.state not in (RecordingState.IDLE, RecordingState.COMPLETED, RecordingState.INTERRUPTED, RecordingState.FAILED):
                 raise RuntimeError(f"Cannot start session; current state is {self.state.value}")
+
+            # Check if evaluation benchmark is currently occupying CPU
+            from ..locks import ResourceLock
+            if ResourceLock("wake_eval").is_locked():
+                raise RuntimeError("Tiến trình benchmark đánh giá model đang chạy; không thể mở phiên thu cùng lúc.")
 
             # Acquire audio lock
             try:
@@ -175,6 +230,8 @@ class RecordingService:
                     "sample_rate": RATE,
                     "status": "incomplete",
                     "clips": [],
+                    "is_mock": session_cfg.mock,
+                    "provenance": "mock_synthetic" if session_cfg.mock else "recorded",
                 }
                 self._save_manifest()
 
@@ -187,11 +244,15 @@ class RecordingService:
                     self._audio_res_lock = None
                 raise
 
-    def advance(self):
-        """User triggers next take in manual advance mode."""
+    def advance(self, session_id: Optional[str] = None, take_sequence: Optional[int] = None):
+        """User triggers next take in manual advance mode, scoped to session and take sequence."""
         with self._lock:
             if self.state != RecordingState.WAITING_USER:
                 raise RuntimeError(f"Chỉ có thể bấm lượt tiếp theo khi trạng thái là 'waiting_user' (hiện tại: {self.state.value})")
+            if session_id and self.session_id != session_id:
+                raise RuntimeError(f"Session ID không khớp hoặc đã kết thúc: kỳ vọng {self.session_id}, nhận {session_id}")
+            if take_sequence is not None and (self.current_take + 1) != take_sequence:
+                raise RuntimeError(f"Lượt thu không khớp (kỳ vọng lượt {self.current_take + 1}, nhận {take_sequence})")
             self._advance_event.set()
 
     def stop(self):
@@ -232,6 +293,8 @@ class RecordingService:
             "status": self.manifest["status"],
             "reviewer": "pending",
             "notes": f"Thu local qua dashboard ({cfg.split})",
+            "is_mock": cfg.mock,
+            "provenance": "mock_synthetic" if cfg.mock else "recorded",
         }
 
         label_entries = []
@@ -254,6 +317,8 @@ class RecordingService:
                 speaker_confirmed=False,
                 review_status="captured_pending_review",
                 review_note="Mới thu qua dashboard, chờ nghe lại và duyệt",
+                is_mock=cfg.mock,
+                provenance="mock_synthetic" if cfg.mock else "recorded",
             )
             label_entries.append(label_entry)
 
@@ -271,10 +336,23 @@ class RecordingService:
                     self.state = RecordingState.WAITING_USER
                     self._advance_event.clear()
 
-                # Wait for user trigger if manual advance
+                # Wait for user trigger if manual advance with lease timeout
                 if self.session_config.manual_advance:
+                    wait_start = time.monotonic()
+                    lease_timeout = 120.0
+                    timed_out = False
                     while not self._advance_event.is_set() and not self._stop_event.is_set():
-                        time.sleep(0.1)
+                        if time.monotonic() - wait_start > lease_timeout:
+                            timed_out = True
+                            break
+                        time.sleep(0.05)
+                    if timed_out:
+                        with self._lock:
+                            self.state = RecordingState.INTERRUPTED
+                            self.error_message = f"Hết thời gian chờ bấm lượt tiếp theo (lease timeout {lease_timeout:.0f}s); phiên bị ngắt."
+                            self.manifest["status"] = "interrupted"
+                            self._save_manifest()
+                        break
                     if self._stop_event.is_set():
                         break
 
@@ -345,9 +423,12 @@ class RecordingService:
             try:
                 self._sync_child_study()
             except Exception as exc:
-                self.manifest["status"] = "sync_failed"
-                self.manifest["sync_error"] = str(exc)
-                self._save_manifest()
+                with self._lock:
+                    self.state = RecordingState.FAILED
+                    self.error_message = f"Lỗi đồng bộ metadata child-study: {exc}"
+                    self.manifest["status"] = "sync_failed"
+                    self.manifest["sync_error"] = str(exc)
+                    self._save_manifest()
 
         except Exception as exc:
             with self._lock:
@@ -385,13 +466,21 @@ class RecordingService:
             self._write_wav(cue_path, values.tobytes())
 
             try:
-                subprocess.run(
+                proc = subprocess.run(
                     ["aplay", "-q", "-D", self.playback_device, str(cue_path)],
                     check=False,
+                    capture_output=True,
                     timeout=3.0,
                 )
-            except Exception:
-                pass
+                if proc.returncode != 0:
+                    err = proc.stderr.decode(errors="replace").strip() if proc.stderr else str(proc.returncode)
+                    raise AudioError(f"Phát tiếng tít thất bại (aplay error: {err})")
+            except subprocess.TimeoutExpired:
+                raise AudioError("Phát tiếng tít bị quá thời gian (timeout 3s); đã dừng phiên.")
+            except AudioError:
+                raise
+            except Exception as exc:
+                raise AudioError(f"Lỗi khi phát tiếng tít: {exc}")
 
         if capture is not None:
             time.sleep(0.05)

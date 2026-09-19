@@ -1,4 +1,4 @@
-"""IR code catalog browsing, searching, and importing endpoints."""
+import os
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, status
 from pydantic import BaseModel, Field
@@ -14,14 +14,6 @@ from ...devices.catalogs.seed_data import get_seed_code_sets
 router = APIRouter(prefix="/api/catalog", tags=["Catalog"])
 
 
-def _ensure_seeds_loaded(storage: DeviceStorage):
-    existing = storage.list_code_sets()
-    if not existing:
-        seeds = get_seed_code_sets()
-        for s in seeds:
-            storage.save_code_set(s)
-
-
 class ImportCatalogRequest(BaseModel):
     catalog_json: Dict[str, Any] = Field(..., description="Dữ liệu JSON của catalog SmartIR hoặc custom CodeSet")
     source_name: str = Field(default="User Import", description="Nguồn catalog")
@@ -30,26 +22,29 @@ class ImportCatalogRequest(BaseModel):
 @router.get("/brands")
 def list_brands(category: Optional[str] = None):
     storage = DeviceStorage()
-    _ensure_seeds_loaded(storage)
-    brands = storage.list_brands(category=category)
+    include_quarantined = os.environ.get("SMART_HUB_MOCK_HARDWARE") == "1"
+    brands = storage.list_brands(category=category, include_quarantined=include_quarantined)
     return brands
 
 
 @router.get("/code-sets")
 def list_code_sets(category: Optional[str] = None, brand: Optional[str] = None):
     storage = DeviceStorage()
-    _ensure_seeds_loaded(storage)
-    code_sets = storage.list_code_sets(category=category, brand=brand)
+    include_quarantined = os.environ.get("SMART_HUB_MOCK_HARDWARE") == "1"
+    code_sets = storage.list_code_sets(category=category, brand=brand, include_quarantined=include_quarantined)
     return [cs.to_dict() for cs in code_sets]
 
 
 @router.get("/code-sets/{code_set_id}")
 def get_code_set(code_set_id: str):
     storage = DeviceStorage()
-    _ensure_seeds_loaded(storage)
     cs = storage.get_code_set(code_set_id)
     if not cs:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy bộ mã '{code_set_id}'")
+    if cs.codes and os.environ.get("SMART_HUB_MOCK_HARDWARE") != "1":
+        # Check if quarantined
+        if getattr(cs, "is_quarantined", False) or cs.id.endswith("_seed"):
+            raise HTTPException(status_code=404, detail=f"Bộ mã '{code_set_id}' thuộc mock seed đã bị cách ly.")
     return cs.to_dict()
 
 
@@ -73,3 +68,18 @@ def import_catalog(req: ImportCatalogRequest):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Lỗi nhập catalog: {exc}")
+
+
+@router.post("/seed")
+def seed_catalog(req: Optional[Dict[str, Any]] = None):
+    storage = DeviceStorage()
+    for cs in get_seed_code_sets():
+        storage.save_code_set(cs)
+    return {"status": "ok", "message": "Catalog đã được nạp dữ liệu mẫu."}
+
+
+@router.post("/quarantine")
+def quarantine_seeds():
+    storage = DeviceStorage()
+    res = storage.quarantine_mock_seeds(backup=True)
+    return {"status": "ok", "quarantined": res}

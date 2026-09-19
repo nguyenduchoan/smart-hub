@@ -121,19 +121,92 @@ class WakeEvaluator:
                 f"Lưu ý: Chế độ 'official' yêu cầu mẫu đã 'accepted' và 'speaker_confirmed=True'."
             )
 
-        # Check for candidate reference sample leakage into test set
+        # Candidate payload preparation with artifact paths
+        cand_payloads = []
+        for c in candidates:
+            cd = c.to_dict()
+            art = self.registry.get_artifact(c.model_id)
+            if art and art.files:
+                cd["artifact_file"] = art.files[0]
+            cand_payloads.append(cd)
+
+        # V2-17: Cross-split reference leakage checks (sample ID, audio file SHA256, and session ID)
+        labels_by_id = {lbl["sample_id"]: lbl for lbl in all_labels}
+        eval_sample_ids = {s["sample_id"] for s in eligible_samples}
+        eval_sample_shas = {s.get("source_sha256") for s in eligible_samples if s.get("source_sha256")}
+        eval_sample_sessions = {s.get("session_id") for s in eligible_samples if s.get("session_id")}
+
         for cand in candidates:
-            if split == "test" and cand.reference_sample_ids:
-                overlap = set(cand.reference_sample_ids).intersection({s["sample_id"] for s in eligible_samples})
-                if overlap:
+            if not cand.reference_sample_ids:
+                continue
+            cand_ref_ids = set(cand.reference_sample_ids)
+            cand_ref_shas = {
+                labels_by_id[sid].get("source_sha256")
+                for sid in cand_ref_ids
+                if sid in labels_by_id and labels_by_id[sid].get("source_sha256")
+            }
+            cand_ref_sessions = {
+                labels_by_id[sid].get("session_id")
+                for sid in cand_ref_ids
+                if sid in labels_by_id and labels_by_id[sid].get("session_id")
+            }
+
+            if split == "test":
+                overlap_ids = cand_ref_ids.intersection(eval_sample_ids)
+                if overlap_ids:
                     raise EvaluationError(
-                        f"Candidate '{cand.name}' chứa {len(overlap)} mẫu tham chiếu nằm trong tập đánh giá test! "
+                        f"Candidate '{cand.name}' rò rỉ dữ liệu: {len(overlap_ids)} sample ID tham chiếu nằm trong tập kiểm thử test ({overlap_ids})! "
                         f"Nghiêm cấm rò rỉ dữ liệu tham chiếu vào tập kiểm thử."
                     )
+                overlap_shas = cand_ref_shas.intersection(eval_sample_shas)
+                if overlap_shas:
+                    raise EvaluationError(
+                        f"Candidate '{cand.name}' rò rỉ dữ liệu: phát hiện file âm thanh theo SHA256 trùng với tập test ({len(overlap_shas)} file)! "
+                        f"Nghiêm cấm sao chép dữ liệu tham chiếu vào tập kiểm thử."
+                    )
+                overlap_sessions = cand_ref_sessions.intersection(eval_sample_sessions)
+                if overlap_sessions:
+                    raise EvaluationError(
+                        f"Candidate '{cand.name}' rò rỉ dữ liệu: session '{overlap_sessions}' dùng cho enrollment lại xuất hiện trong tập test độc lập!"
+                    )
 
-        # Compute dataset snapshot hash
-        sample_ids_str = ",".join(sorted(s["sample_id"] + ":" + s.get("source_sha256", "") for s in eligible_samples))
-        snapshot_hash = hashlib.sha256(sample_ids_str.encode("utf-8")).hexdigest()[:16]
+        # V2-18: Exclude mock synthetic samples in official benchmark
+        if mode == "official":
+            mock_samples = [
+                s["sample_id"]
+                for s in eligible_samples
+                if s.get("is_mock") is True or s.get("provenance") in ("mock", "mock_synthetic")
+            ]
+            if mock_samples:
+                raise EvaluationError(
+                    f"Chế độ 'official' phát hiện {len(mock_samples)} mẫu mock synthetic ({mock_samples[:3]}...). "
+                    f"Mẫu mock bị nghiêm cấm trong benchmark chính thức."
+                )
+
+        # V2-17: Comprehensive dataset & candidate snapshot hash
+        snapshot_elements = []
+        for s in sorted(eligible_samples, key=lambda x: str(x.get("sample_id", ""))):
+            elem = (
+                f"{s.get('sample_id', '')}:"
+                f"{s.get('source_sha256', '')}:"
+                f"{s.get('label', '')}:"
+                f"{s.get('expected_events', '')}:"
+                f"{s.get('speaker_id', '')}:"
+                f"{s.get('session_id', '')}:"
+                f"{s.get('split', '')}:"
+                f"{s.get('review_status', '')}:"
+                f"{s.get('speaker_confirmed', '')}:"
+                f"{s.get('revision', 1)}"
+            )
+            snapshot_elements.append(elem)
+
+        for c in sorted(candidates, key=lambda x: str(x.id)):
+            eng_val = c.engine.value if hasattr(c.engine, "value") else str(c.engine)
+            elem = f"cand:{c.id}:{eng_val}:{c.profile}:{c.threshold}:{c.model_id}"
+            snapshot_elements.append(elem)
+
+        snapshot_str = "\n".join(snapshot_elements)
+        snapshot_hash = hashlib.sha256(snapshot_str.encode("utf-8")).hexdigest()[:16]
 
         eval_id = f"eval_{uuid.uuid4().hex[:10]}"
         eval_name = name.strip() or f"Đánh giá {split} ({mode}) - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
@@ -159,7 +232,7 @@ class WakeEvaluator:
             self._preflight_audio_python(root)
             payload = json.dumps({
                 "eligible_samples": eligible_samples,
-                "candidates": [c.to_dict() for c in candidates],
+                "candidates": cand_payloads,
                 "split": split,
                 "mode": mode,
                 "root": str(root),
@@ -188,7 +261,7 @@ class WakeEvaluator:
             # R08: In-process independent candidate evaluation
             eval_data = run_candidate_evaluation(
                 eligible_samples=eligible_samples,
-                candidates_data=[c.to_dict() for c in candidates],
+                candidates_data=cand_payloads,
                 split=split,
                 mode=mode,
                 root=root,
