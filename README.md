@@ -212,7 +212,13 @@ Sau khi duyệt, mẫu được cập nhật `speaker_confirmed: true`, `review_
 (hoặc gọi không tham số `.venv/bin/python scripts/review_child_study.py`).
 
 ### 3. Đánh giá offline chính thức (Official Benchmark)
-Mặc định runner chỉ đánh giá tập `--split dev` và nghiêm ngặt yêu cầu các mẫu đã được duyệt chấp nhận (`review_status == "accepted"`, `speaker_confirmed == true`, đúng SHA-256). Tập `test` được bảo vệ độc lập:
+Mặc định runner chỉ đánh giá tập `--split dev` và bảo vệ độc lập tập `test`.
+Quy trình đánh giá chính thức phân biệt rõ hai giai đoạn:
+1. **Lựa chọn mẫu (Selection)**: Runner chọn các mẫu thuộc tập đánh giá thỏa mãn tiêu chuẩn nghiệp vụ: `review_status == "accepted"`, `speaker_confirmed == true`, đầy đủ thông tin định danh và nhãn hợp lệ.
+2. **Đánh giá tính toàn vẹn (Integrity evaluation)**: Sau khi đã được chọn vào benchmark, nếu mẫu bị mất file WAV, sai định dạng, thiếu checksum hoặc không khớp mã hash `source_sha256`, mẫu đó **vẫn được tính vào mẫu số (denominator)** và nhận trạng thái `ERROR` (chứ không bị loại bỏ trước khi tính toán tỷ lệ).
+   - *Ví dụ*: Có 10 mẫu đã duyệt chấp nhận (9 mẫu file tốt, 1 mẫu bị SHA mismatch) -> `eligible_total = 10`, `accurate = 9`, `errors = 1` -> kết quả hiển thị 9/10 (90%) kèm 1 ERROR, lệnh lưu báo cáo chẩn đoán và trả exit code khác 0 (fail-closed), tránh thổi phồng kết quả thành 9/9 (100%).
+
+Chạy đánh giá chính thức trên tập dev:
 ```bash
 .venv/bin/python scripts/evaluate_child_study.py
 ```

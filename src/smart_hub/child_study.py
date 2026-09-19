@@ -1009,7 +1009,7 @@ def format_evaluation_markdown(results):
     for p in profiles:
         tag = "baseline" if p == "standard" else "candidate"
         headers.append(f"{p} ({tag})")
-    headers.append("Mục tiêu pilot")
+    headers.append("Ghi chú")
     lines.append("| " + " | ".join(headers) + " |")
     lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
 
@@ -1040,7 +1040,7 @@ def format_evaluation_markdown(results):
     for p in profiles:
         pos = metrics.get(p, {}).get("positive", {})
         row_dup.append(f"{pos.get('duplicate', 0)} ({pct(pos.get('duplicate_rate'))})")
-    row_dup.append("0 lượt trùng")
+    row_dup.append("0 lượt trùng (toàn cục)")
     lines.append("| " + " | ".join(row_dup) + " |")
 
     # Row 4: FAR
@@ -1050,7 +1050,7 @@ def format_evaluation_markdown(results):
         err = neg.get("errors", 0)
         err_str = f" [{err} ERROR]" if err else ""
         row_far.append(f"{neg.get('false_alarm', 0)}/{neg.get('eligible', 0)} ({pct(neg.get('far'))}){err_str}")
-    row_far.append("0%")
+    row_far.append("0% (toàn cục)")
     lines.append("| " + " | ".join(row_far) + " |")
 
     # Row 5: RTF (Decode RTF)
@@ -1058,7 +1058,7 @@ def format_evaluation_markdown(results):
     for p in profiles:
         perf = metrics.get(p, {}).get("performance", {})
         row_rtf.append(f"{perf.get('decode_rtf', 0.0):.3f}")
-    row_rtf.append("< 0.100")
+    row_rtf.append("< 0.100 (ngưỡng chẩn đoán)")
     lines.append("| " + " | ".join(row_rtf) + " |")
 
     # Row 6: Max STT time
@@ -1066,7 +1066,7 @@ def format_evaluation_markdown(results):
     for p in profiles:
         perf = metrics.get(p, {}).get("performance", {})
         row_max.append(f"{perf.get('max_decode_seconds', 0.0):.3f}s")
-    row_max.append("< 0.500s")
+    row_max.append("< 0.500s (ngưỡng chẩn đoán)")
     lines.append("| " + " | ".join(row_max) + " |")
 
     # Row 7: Total errors
@@ -1074,7 +1074,7 @@ def format_evaluation_markdown(results):
     for p in profiles:
         err = metrics.get(p, {}).get("errors", 0)
         row_err.append(f"{err}")
-    row_err.append("0")
+    row_err.append("0 (toàn cục)")
     lines.append("| " + " | ".join(row_err) + " |")
     lines.append("")
 

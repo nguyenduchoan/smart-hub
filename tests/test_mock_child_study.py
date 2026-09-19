@@ -768,13 +768,17 @@ class MockChildStudyTests(unittest.TestCase):
         self.assertEqual(len(ineligible), 5)
         self.assertEqual({e["sample_id"] for e in eligible}, {"a1", "a2"})
 
-    # 29. review parser subcommands and top-level rejection
+    # 29. review parser subcommands and selector enforcement
     def test_29_review_parser_subcommands(self):
         parser = review_cli.build_parser()
         args = parser.parse_args(["review", "--session-id", "S01", "--auto-qc"])
         self.assertEqual(args.command, "review")
         self.assertEqual(args.session_id, "S01")
         self.assertTrue(args.auto_qc)
+
+        args_dir = parser.parse_args(["review", "--dir", "recordings/test"])
+        self.assertEqual(args_dir.command, "review")
+        self.assertEqual(args_dir.dir, "recordings/test")
 
         args_sum = parser.parse_args(["summary"])
         self.assertEqual(args_sum.command, "summary")
@@ -784,6 +788,12 @@ class MockChildStudyTests(unittest.TestCase):
 
         with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["--auto-qc"])
+
+        with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["review"])
+
+        with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["review", "--session-id", "S01", "--dir", "recordings/test"])
 
     # 30. reproducibility metadata dùng đúng stt_assets BUNDLE và FILES
     def test_30_reproducibility_metadata_matches_stt_assets(self):
@@ -803,8 +813,8 @@ class MockChildStudyTests(unittest.TestCase):
         self.assertEqual(meta["model_file_hashes"], expected_hashes)
         self.assertNotIn("bilingual-zh-en", meta["stt_model_bundle"])
 
-    # 31. reviewer không accept sample thiếu/wrong SHA; auto-qc không set technical_pass
-    def test_31_review_missing_sha_blocks_accept_and_auto_qc_rejects(self):
+    # 31. reviewer không accept sample thiếu/wrong SHA; auto-qc missing SHA sets needs_review, wrong SHA rejects
+    def test_31_review_missing_sha_blocks_accept_and_auto_qc_sets_needs_review(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             wav = create_fake_wav(root / "test.wav")
@@ -831,9 +841,26 @@ class MockChildStudyTests(unittest.TestCase):
                 review_cli.review_session(target_session="S1", auto_qc=True, reviewer="QC")
                 mock_save_label.assert_called_once()
                 saved_entry = mock_save_label.call_args[0][0]
-                self.assertEqual(saved_entry["review_status"], "rejected")
+                self.assertEqual(saved_entry["review_status"], "needs_review")
+                self.assertNotEqual(saved_entry["review_status"], "rejected")
+                self.assertNotEqual(saved_entry["review_status"], "technical_pass")
                 self.assertFalse(saved_entry["speaker_confirmed"])
-                self.assertIn("Thiếu source_sha256", saved_entry["review_note"])
+                self.assertIn("Technical QC incomplete: missing original source_sha256", saved_entry["review_note"])
+
+            # Test actual SHA mismatch with auto-qc -> rejected
+            bad_sha_entry = create_label_entry(
+                "s2", str(wav), "0" * 64, "child_01", "S1",
+                split="dev", label="positive", review_status="captured_pending_review",
+            )
+            with patch("scripts.review_child_study.ROOT", root), \
+                 patch("scripts.review_child_study.load_labels", return_value=[bad_sha_entry]), \
+                 patch("scripts.review_child_study.save_label") as mock_save_label2:
+                review_cli.review_session(target_session="S1", auto_qc=True, reviewer="QC")
+                mock_save_label2.assert_called_once()
+                saved_bad = mock_save_label2.call_args[0][0]
+                self.assertEqual(saved_bad["review_status"], "rejected")
+                self.assertFalse(saved_bad["speaker_confirmed"])
+                self.assertIn("SHA-256 mismatch", saved_bad["review_note"])
 
     # 32. report markdown không gắn acceptance target condition-specific cạnh aggregate positive rate
     def test_32_report_markdown_presentation(self):
@@ -880,6 +907,8 @@ class MockChildStudyTests(unittest.TestCase):
         self.assertIn("9/10", md)
         self.assertIn("10/10", md)
         self.assertIn("[1 ERROR]", md)
+        self.assertIn("Ghi chú", md)
+        self.assertNotIn("Mục tiêu pilot", md)
 
 
 if __name__ == "__main__":

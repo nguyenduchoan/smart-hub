@@ -387,8 +387,8 @@ hoạt động theo nguyên tắc **thu âm → kiểm tra kỹ thuật → duy�
    ban đầu `captured_pending_review`, `speaker_confirmed: false`.
 2. **Kiểm tra kỹ thuật tự động**: `scripts/review_child_study.py review --session-id <ID> --auto-qc`
    (hoặc `--dir <DIR>`) kiểm tra tính toàn vẹn file WAV, định dạng (16 kHz, mono, 16-bit PCM) và
-   khớp checksum SHA-256. Lệnh này chỉ đánh dấu `technical_pass`, **không** tự
-   động xác nhận danh tính người nói.
+   khớp checksum SHA-256. Lệnh này chỉ đánh dấu `technical_pass` (khi đạt chuẩn kỹ thuật và khớp SHA)
+   hoặc `needs_review` (nếu thiếu checksum gốc), **không** tự động xác nhận danh tính người nói.
 3. **Duyệt thủ công (Interactive Review)**: Người vận hành nghe lại từng file qua
    `scripts/review_child_study.py review --session-id <ID> --reviewer <NAME>`
    (hoặc `--dir <DIR>`), kiểm tra tạp âm/clipping, xác nhận đúng người

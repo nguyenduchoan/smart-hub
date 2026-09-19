@@ -134,7 +134,7 @@ def review_session(target_dir=None, target_session=None, auto_qc=False, reviewer
 
     if not target_session and not target_dir:
         print("[ERROR] Cần chỉ định --session-id hoặc --dir để chọn mẫu cần duyệt.", file=sys.stderr)
-        return
+        return 1
 
     # Find matching labels
     matching = []
@@ -153,7 +153,7 @@ def review_session(target_dir=None, target_session=None, auto_qc=False, reviewer
                 manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
             except Exception as exc:
                 print(f"[ERROR] Malformed manifest: {exc}", file=sys.stderr)
-                return
+                return 1
             rel_dir = str(dir_path.relative_to(ROOT))
             session_id = manifest.get("session_id", dir_path.name)
             speaker_id = manifest.get("speaker_id", "unknown")
@@ -187,7 +187,7 @@ def review_session(target_dir=None, target_session=None, auto_qc=False, reviewer
 
     if not matching:
         print("[INFO] Không tìm thấy mẫu nào cần duyệt.")
-        return
+        return 0
 
     reviewed_sessions = set()
     print(f"=== BẮT ĐẦU DUYỆT {len(matching)} MẪU ===")
@@ -206,13 +206,18 @@ def review_session(target_dir=None, target_session=None, auto_qc=False, reviewer
             print(f"  [ERROR] Lỗi kiểm tra file audio: {err_msg}")
             if auto_qc:
                 item["speaker_confirmed"] = False
-                item["review_status"] = "rejected"
                 item["reviewer"] = reviewer
                 item["reviewed_at"] = datetime.now().astimezone().isoformat()
-                item["review_note"] = f"Technical QC failed: {err_msg}"
+                if not item.get("source_sha256") or not str(item.get("source_sha256")).strip() or "Thiếu source_sha256" in str(err_msg):
+                    item["review_status"] = "needs_review"
+                    item["review_note"] = "Technical QC incomplete: missing original source_sha256"
+                    print(f"  -> Đã cập nhật: NEEDS_REVIEW ({item['review_note']})")
+                else:
+                    item["review_status"] = "rejected"
+                    item["review_note"] = f"Technical QC failed: {err_msg}"
+                    print(f"  -> Đã cập nhật: REJECTED ({err_msg})")
                 save_label(item)
                 reviewed_sessions.add(item.get("session_id"))
-                print(f"  -> Đã cập nhật: REJECTED ({err_msg})")
                 continue
         else:
             print(
@@ -272,6 +277,7 @@ def review_session(target_dir=None, target_session=None, auto_qc=False, reviewer
                 break
             elif choice == "n":
                 note = input("  Ghi chú nghi ngờ: ").strip() or "Cần đối chiếu thêm"
+                item["speaker_confirmed"] = False
                 item["review_status"] = "needs_review"
                 item["reviewer"] = reviewer
                 item["reviewed_at"] = datetime.now().astimezone().isoformat()
@@ -287,6 +293,7 @@ def review_session(target_dir=None, target_session=None, auto_qc=False, reviewer
     # Update session review status in sessions.json
     update_session_review_status(reviewed_sessions, reviewer)
     print("\n[DONE] Hoàn tất quá trình duyệt!")
+    return 0
 
 
 def build_parser():
@@ -296,8 +303,9 @@ def build_parser():
     sub.add_parser("summary", help="Hiển thị tổng quan bộ dữ liệu đã thu và đã duyệt.")
 
     rev = sub.add_parser("review", help="Duyệt từng mẫu trong phiên hoặc thư mục.")
-    rev.add_argument("--session-id", default=None, help="Mã phiên (session_id) cần duyệt.")
-    rev.add_argument("--dir", default=None, help="Đường dẫn thư mục thu âm.")
+    selector = rev.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--session-id", default=None, help="Mã phiên (session_id) cần duyệt.")
+    selector.add_argument("--dir", default=None, help="Đường dẫn thư mục thu âm.")
     rev.add_argument(
         "--auto-qc",
         "--auto-accept",
@@ -315,7 +323,7 @@ def main(argv=None):
     ensure_child_study_dirs()
 
     if args.command == "review":
-        review_session(
+        return review_session(
             target_dir=args.dir,
             target_session=args.session_id,
             auto_qc=args.auto_qc,
@@ -323,7 +331,8 @@ def main(argv=None):
         )
     else:
         print_summary()
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
