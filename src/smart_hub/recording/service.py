@@ -218,7 +218,8 @@ class RecordingService:
                 now = datetime.now()
                 if session_cfg.session_id:
                     sid = session_cfg.session_id.strip()
-                    existing = load_sessions()
+                    sessions_file = self.child_study_dir / "sessions.json"
+                    existing = load_sessions(sessions_file=sessions_file)
                     if any(s.get("session_id") == sid for s in existing):
                         raise ValueError(f"Mã phiên thu '{sid}' đã tồn tại trong sessions.json.")
                     self.session_id = sid

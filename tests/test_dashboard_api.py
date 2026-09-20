@@ -3,7 +3,6 @@ import base64
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import sys
 import tempfile
 import unittest
@@ -45,8 +44,12 @@ class DashboardAPITests(unittest.TestCase):
         self.env_patcher = mock.patch.dict("os.environ", {"SMART_HUB_MOCK_HARDWARE": "1"})
         self.env_patcher.start()
 
-        # Create temporary valid WAV file in recordings/ for audio tests (audible 440Hz tone, not silent)
-        self.test_wav_dir = ROOT / "recordings" / "_test_dashboard_tmp"
+        # Keep audio fixtures isolated while exercising the real ROOT-relative resolver.
+        self.audio_root = Path(self.tmp_dir.name)
+        self.samples_root_patcher = mock.patch("smart_hub.dashboard.routes.samples.ROOT", self.audio_root)
+        self.samples_root_patcher.start()
+        self.addCleanup(self.samples_root_patcher.stop)
+        self.test_wav_dir = self.audio_root / "recordings" / "samples"
         self.test_wav_dir.mkdir(parents=True, exist_ok=True)
         self.test_wav_path = self.test_wav_dir / "test_sample.wav"
         with wave.open(str(self.test_wav_path), "wb") as wf:
@@ -58,7 +61,7 @@ class DashboardAPITests(unittest.TestCase):
             samples = [int(5000 * math.sin(2 * math.pi * 440 * i / 16000)) for i in range(8000)]
             wf.writeframes(struct.pack(f"<{len(samples)}h", *samples))
         self.test_wav_sha256 = hashlib.sha256(self.test_wav_path.read_bytes()).hexdigest()
-        self.test_wav_rel = str(self.test_wav_path.relative_to(ROOT))
+        self.test_wav_rel = str(self.test_wav_path.relative_to(self.audio_root))
 
         self.app = create_app(allowed_hosts={"testserver", "localhost", "127.0.0.1", "::1", "[::1]"})
         self.client = TestClient(self.app, base_url="http://testserver")
@@ -83,8 +86,6 @@ class DashboardAPITests(unittest.TestCase):
         self.env_patcher.stop()
         self.patcher.stop()
         self.tmp_dir.cleanup()
-        if self.test_wav_dir.exists():
-            shutil.rmtree(self.test_wav_dir, ignore_errors=True)
 
     def test_health_endpoint(self):
         res = self.client.get("/api/health")
@@ -483,7 +484,7 @@ class DashboardAPITests(unittest.TestCase):
         bad_rate_sample = {
             "sample_id": "bad_rate_01",
             "review_status": "captured_pending_review",
-            "source": str(bad_rate_path.relative_to(ROOT)),
+            "source": str(bad_rate_path.relative_to(self.audio_root)),
             "source_sha256": bad_rate_sha,
         }
         with mock.patch("smart_hub.dashboard.routes.samples.load_labels", return_value=[bad_rate_sample]):
@@ -522,7 +523,7 @@ class DashboardAPITests(unittest.TestCase):
         clipped_sample = {
             "sample_id": "clipped_01",
             "review_status": "captured_pending_review",
-            "source": str(clipped_path.relative_to(ROOT)),
+            "source": str(clipped_path.relative_to(self.audio_root)),
             "source_sha256": clipped_sha,
         }
         with mock.patch("smart_hub.dashboard.routes.samples.load_labels", return_value=[clipped_sample]):

@@ -1,4 +1,5 @@
 """Unit tests for recording service state machine, manual advance, and session safety."""
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -7,6 +8,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from smart_hub.child_study import load_sessions
 from smart_hub.recording import (
     RecordingService,
     RecordingState,
@@ -28,6 +30,79 @@ class RecordingServiceTests(unittest.TestCase):
             self.service._audio_res_lock.release()
             self.service._audio_res_lock = None
         self.tmp_dir.cleanup()
+
+    def test_v3_2_01_duplicate_in_injected_dataset_fails_before_worker(self):
+        child_study_dir = self.recordings_root / "injected-study"
+        child_study_dir.mkdir()
+        sessions_file = child_study_dir / "sessions.json"
+        sessions_file.write_text('[{"session_id": "S_DUP_TEMP"}]\n', encoding="utf-8")
+        other_sessions_file = self.recordings_root / "other-sessions.json"
+        other_sessions_file.write_text("[]\n", encoding="utf-8")
+        self.service = RecordingService(
+            recordings_root=self.recordings_root / "captures",
+            child_study_dir=child_study_dir,
+        )
+        cfg = SessionConfig(
+            speaker="child", speaker_id="child_collision", split="dev",
+            label="positive", phrase="Maika ơi", expected_events=1,
+            distance_m=1.0, condition="quiet", takes_planned=1,
+            session_id="S_DUP_TEMP",
+        )
+
+        with mock.patch("smart_hub.child_study.SESSIONS_FILE", other_sessions_file), \
+             mock.patch("smart_hub.recording.service.load_sessions", wraps=load_sessions) as lookup, \
+             mock.patch("smart_hub.recording.service.threading.Thread") as thread, \
+             mock.patch("smart_hub.recording.service.AlsaCapture") as capture:
+            with self.assertRaisesRegex(ValueError, "S_DUP_TEMP.*đã tồn tại"):
+                self.service.start_session(cfg)
+
+            lookup.assert_called_once_with(sessions_file=self.service.child_study_dir / "sessions.json")
+            thread.assert_not_called()
+            capture.assert_not_called()
+
+        self.assertEqual(self.service.state, RecordingState.IDLE)
+        self.assertIsNone(self.service._thread)
+        self.assertIsNone(self.service._audio_res_lock)
+        self.assertIsNone(self.service.session_dir)
+        self.assertFalse(self.service.recordings_root.exists())
+        self.assertEqual(load_sessions(sessions_file=sessions_file), [{"session_id": "S_DUP_TEMP"}])
+
+    def test_v3_2_01_other_dataset_collision_does_not_block_custom_session(self):
+        child_study_dir = self.recordings_root / "injected-study"
+        child_study_dir.mkdir()
+        sessions_file = child_study_dir / "sessions.json"
+        sessions_file.write_text('[{"session_id": "S_DUP_TEMP"}]\n', encoding="utf-8")
+        other_sessions_file = self.recordings_root / "other-sessions.json"
+        other_data = '[{"session_id": "S_OTHER_ONLY"}]\n'
+        other_sessions_file.write_text(other_data, encoding="utf-8")
+        self.service = RecordingService(
+            recordings_root=self.recordings_root / "captures",
+            child_study_dir=child_study_dir,
+        )
+        cfg = SessionConfig(
+            speaker="child", speaker_id="child_isolated", split="dev",
+            label="positive", phrase="Maika ơi", expected_events=1,
+            distance_m=1.0, condition="quiet", takes_planned=1,
+            session_id="S_OTHER_ONLY", manual_advance=False, mock=True,
+        )
+
+        with mock.patch("smart_hub.child_study.SESSIONS_FILE", other_sessions_file), \
+             mock.patch("smart_hub.recording.service.load_sessions", wraps=load_sessions) as lookup, \
+             mock.patch("smart_hub.recording.service.AlsaCapture") as capture:
+            self.service.start_session(cfg)
+            self.service._thread.join(timeout=3.0)
+            self.assertFalse(self.service._thread.is_alive())
+            lookup.assert_called_once_with(sessions_file=self.service.child_study_dir / "sessions.json")
+            capture.assert_not_called()
+
+        self.assertEqual(self.service.state, RecordingState.COMPLETED, self.service.error_message)
+        self.assertEqual(self.service.session_id, "S_OTHER_ONLY")
+        self.assertTrue(self.service.session_dir.is_dir())
+        target_sessions = load_sessions(sessions_file=sessions_file)
+        self.assertEqual({s["session_id"] for s in target_sessions}, {"S_DUP_TEMP", "S_OTHER_ONLY"})
+        labels = [json.loads(line) for line in (child_study_dir / "labels.jsonl").read_text().splitlines()]
+        self.assertEqual([s["session_id"] for s in labels], ["S_OTHER_ONLY"])
+        self.assertEqual(other_sessions_file.read_text(encoding="utf-8"), other_data)
 
     def test_session_lifecycle_with_manual_advance(self):
         cfg = SessionConfig(

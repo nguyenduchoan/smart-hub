@@ -1202,129 +1202,114 @@ class WakeLabTests(unittest.TestCase):
         md_err = format_evaluation_markdown(err_data)
         self.assertIn("| `sample_err_01` | `positive` | `DTW Cand` | ERROR | **ERROR** | error: Truncated PCM audio in test.wav | N/A | N/A |", md_err)
 
-    def test_v3_1_07_subprocess_worker_dtw_error_and_parent_evaluator(self):
+    def test_v3_2_02_parent_evaluator_persists_subprocess_dtw_error(self):
         import json, os, subprocess
         venv_py = ROOT / ".venv" / "bin" / "python"
+        # Use a distinct interpreter entry point even when this suite runs in .venv.
+        if str(venv_py.resolve()) == sys.executable:
+            venv_py = venv_py.with_name("python3")
         if not venv_py.exists():
-            self.skipTest(".venv/bin/python not found")
+            self.skipTest(f"Audio interpreter not found: {venv_py}")
 
-        # 1. Enroll DTW candidate to get a real template.npz artifact
-        with unittest.mock.patch("smart_hub.wake_lab.enrollment.load_labels") as mock_labels:
-            mock_labels.return_value = [
-                {
-                    "sample_id": "child_dev_ref_sub",
-                    "split": "dev",
-                    "review_status": "accepted",
-                    "speaker_confirmed": True,
-                    "source": self.test_wav_rel,
-                    "source_sha256": self.test_wav_sha,
-                }
-            ]
-            cand = create_candidate_from_samples(
-                name="DTW Subprocess Cand",
-                sample_ids=["child_dev_ref_sub"],
-                engine=WakeEngine.DTW,
-                threshold=0.3,
-                registry=self.registry,
-                root=Path(self.tmp_dir.name),
-            )
-        art = self.registry.get_artifact(cand.model_id)
-
-        # Input: 1 valid sample, 1 integrity-error sample (missing file)
-        payload = {
-            "eligible_samples": [
-                {
-                    "sample_id": "s_valid_dev",
-                    "source": self.test_wav_rel,
-                    "source_sha256": self.test_wav_sha,
-                    "speaker_id": "child_01",
-                    "speaker_label": "child",
-                    "session_id": "s_dev_1",
-                    "split": "dev",
-                    "label": "positive",
-                    "transcript_human": "Maika ơi",
-                    "condition": "quiet_normal_voice",
-                    "distance_m": 1.0,
-                    "speaker_confirmed": True,
-                    "review_status": "accepted",
-                    "expected_events": 1,
-                },
-                {
-                    "sample_id": "s_error_dev",
-                    "source": "missing_audio_sub.wav",
-                    "source_sha256": "fake_sha_missing",
-                    "speaker_id": "child_01",
-                    "speaker_label": "child",
-                    "session_id": "s_dev_1",
-                    "split": "dev",
-                    "label": "negative",
-                    "transcript_human": "Không có",
-                    "condition": "quiet_normal_voice",
-                    "distance_m": 1.0,
-                    "speaker_confirmed": True,
-                    "review_status": "accepted",
-                    "expected_events": 0,
-                },
-            ],
-            "candidates": [
-                {
-                    "id": cand.id,
-                    "name": "DTW Subprocess Cand",
-                    "engine": "dtw",
-                    "threshold": 0.3,
-                    "artifact_file": art.files[0],
-                }
-            ],
+        root = Path(self.tmp_dir.name)
+        common = {
+            "speaker_id": "child_01",
+            "speaker_label": "child",
+            "session_id": "s_dev_1",
             "split": "dev",
-            "mode": "official",
-            "root": str(self.tmp_dir.name),
+            "condition": "quiet_normal_voice",
+            "distance_m": 1.0,
+            "speaker_confirmed": True,
+            "review_status": "accepted",
         }
-        worker_script = str(ROOT / "src" / "smart_hub" / "wake_lab" / "worker.py")
-        proc = subprocess.run(
-            [str(venv_py), worker_script],
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            cwd=str(ROOT),
-            env=dict(os.environ, PYTHONPATH=f"{ROOT / 'src'}:{os.environ.get('PYTHONPATH', '')}"),
-            timeout=30.0,
+        samples = [
+            dict(common, sample_id="s_valid_dev", source=self.test_wav_rel,
+                 source_sha256=self.test_wav_sha, label="positive",
+                 transcript_human="Maika ơi", expected_events=1),
+            dict(common, sample_id="s_error_dev", source="missing_audio_sub.wav",
+                 source_sha256="fake_sha_missing", label="negative",
+                 transcript_human="Không có", expected_events=0),
+        ]
+        child_study_dir = root / "child-study"
+        child_study_dir.mkdir()
+        (child_study_dir / "labels.jsonl").write_text(
+            "".join(json.dumps(s, ensure_ascii=False) + "\n" for s in samples), encoding="utf-8",
         )
-        self.assertEqual(proc.returncode, 0, f"Worker process failed: {proc.stderr}")
-        resp = json.loads(proc.stdout)
-        self.assertEqual(resp.get("status"), "ok")
-        eval_data = resp["eval_data"]
-        self.assertEqual(eval_data["status"], "completed_with_errors")
-        self.assertTrue(eval_data["has_processing_errors"])
+        cand = create_candidate_from_samples(
+            name="DTW Subprocess Cand", sample_ids=["s_valid_dev"],
+            engine=WakeEngine.DTW, threshold=0.3, registry=self.registry, root=root,
+        )
+        art = self.registry.get_artifact(cand.model_id)
+        self.assertTrue((root / art.files[0]).is_file())
+        evaluator = WakeEvaluator(self.registry, audio_python=str(venv_py))
+        self.assertNotEqual(evaluator.audio_python, sys.executable)
+
+        # Observe real subprocesses and persistence; never fabricate their responses.
+        real_run = subprocess.run
+        processes = []
+
+        def launch_worker(*args, **kwargs):
+            proc = real_run(*args, **kwargs)
+            processes.append(proc)
+            return proc
+
+        with mock.patch.dict(os.environ, {
+            "SMART_HUB_MOCK_HARDWARE": "0",
+            "PYTHONPATH": f"{ROOT / 'src'}:{os.environ.get('PYTHONPATH', '')}",
+        }), mock.patch("smart_hub.wake_lab.evaluator.subprocess.run", side_effect=launch_worker) as launch, \
+             mock.patch.object(self.registry, "save_evaluation", wraps=self.registry.save_evaluation) as save, \
+             mock.patch("smart_hub.wake_lab.evaluator.run_candidate_evaluation",
+                        side_effect=AssertionError("Parent must launch the audio worker")):
+            result = evaluator.run_evaluation(
+                candidate_ids=[cand.id], split="dev", mode="official",
+                name="Subprocess Parent Test", root=root,
+            )
+
+        # Parent performs both preflight and evaluation in the real audio interpreter.
+        self.assertEqual(launch.call_count, 2)
+        for proc in processes:
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(json.loads(processes[0].stdout)["preflight"])
+        worker_script = str(ROOT / "src" / "smart_hub" / "wake_lab" / "worker.py")
+        self.assertEqual(launch.call_args.args[0], [evaluator.audio_python, worker_script])
+        payload = json.loads(launch.call_args.kwargs["input"])
+        self.assertEqual(payload["eligible_samples"], samples)
+        self.assertEqual(payload["candidates"][0]["artifact_file"], art.files[0])
+        self.assertEqual(payload["root"], str(root))
+        envelope = json.loads(processes[-1].stdout)
+        self.assertEqual(envelope["status"], "ok")
+        self.assertEqual(result["results"], envelope["eval_data"])
+
+        self.assertTrue(result["id"])
+        self.assertEqual(result["status"], "completed_with_errors")
+        self.assertTrue(result["has_processing_errors"])
+        self.assertEqual(result["sample_count"], 2)
+        eval_data = result["results"]
         self.assertEqual(eval_data["eligible_total"], 2)
-        m = eval_data["metrics"]["DTW Subprocess Cand"]
+        m = eval_data["metrics"][cand.name]
         self.assertEqual(m["eligible_total"], 2)
         self.assertEqual(m["processed_total"], 1)
         self.assertEqual(m["errors"], 1)
 
-        # Parent path: WakeEvaluator saves and reloads completed_with_errors
-        evaluator = WakeEvaluator(self.registry, audio_python=str(venv_py))
-        eval_id = "eval_sub_parent_test"
-        eval_name = "Subprocess Parent Test"
-        md_report = format_evaluation_markdown(eval_data)
-        evaluator.registry.save_evaluation(
-            eval_id=eval_id,
-            name=eval_name,
-            candidate_ids=[cand.id],
-            split="dev",
-            mode="official",
-            snapshot_hash="sub_snap_hash",
-            sample_count=2,
-            results_json=json.dumps(eval_data),
-            report_md=md_report,
-            status="completed_with_errors",
-        )
-
-        loaded = self.registry.get_evaluation(eval_id)
+        save.assert_called_once()
+        self.assertEqual(save.call_args.kwargs["eval_id"], result["id"])
+        self.assertEqual(save.call_args.kwargs["status"], "completed_with_errors")
+        self.assertEqual(json.loads(save.call_args.kwargs["results_json"]), eval_data)
+        loaded = WakeRegistry(self.db_path).get_evaluation(result["id"])
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded["status"], "completed_with_errors")
         self.assertTrue(loaded["has_processing_errors"])
-        self.assertIn("File not found", loaded["report_markdown"])
-        self.assertIn("N/A", loaded["report_markdown"])
+        self.assertEqual(loaded["sample_count"], 2)
+        self.assertEqual(loaded["results"], eval_data)
+        self.assertEqual(loaded["results"]["eligible_total"], 2)
+        self.assertEqual(loaded["results"]["metrics"][cand.name]["eligible_total"], 2)
+        self.assertEqual(loaded["results"]["metrics"][cand.name]["errors"], 1)
+        self.assertEqual(loaded["report_markdown"], result["report_markdown"])
+        error_row = next(line for line in loaded["report_markdown"].splitlines()
+                         if line.startswith("| `s_error_dev` |"))
+        self.assertIn("**ERROR**", error_row)
+        self.assertIn("File not found", error_row)
+        self.assertTrue(error_row.endswith("| N/A | N/A |"), error_row)
 
 
 if __name__ == "__main__":
